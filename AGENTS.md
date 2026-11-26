@@ -25,9 +25,9 @@ Use a small file for quick checks, or the checked-in baseline book for the repos
 Quick smoke test:
 
 ```bash
-python3 scripts/convert.py /path/to/small.pdf --olang zh
+python3 scripts/convert.py /path/to/small.pdf --olang zh --temp-root output
 # then run translation via the skill
-python3 scripts/merge_and_build.py --temp-dir <name>_temp --title "test"
+python3 scripts/merge_and_build.py --temp-dir "output/small_temp" --title "test"
 ```
 
 Full baseline test:
@@ -49,7 +49,8 @@ Verify: all output_chunk*.md files exist, manifest validation passes, output for
 - SKILL.md frontmatter must stay single-line per field (OpenClaw parser requirement)
 - Script paths in SKILL.md use `{baseDir}` not hardcoded paths
 - Subagent instructions in SKILL.md must be platform-neutral (work on Codex, Claude Code, OpenClaw)
-- Checked-in baseline inputs live under `tests/baselines/<book-id>/`; generated full-pipeline outputs live under `tests/.artifacts/`
+- Store local translation working directories under `output/<book_name>_temp/`. When running `scripts/convert.py` from the repository root, pass `--temp-root output`. Use the resulting path with `--temp-dir` when building the book.
+- Checked-in baseline inputs live under `tests/baselines/<book-id>/`. Full-pipeline test artifacts live under `tests/.artifacts/`.
 - README changes must be synced to README.md, README.zh-CN.md, and README.ja.md
 - Releases follow `.claude/commands/release.md` — three commands in order: `git push origin main`, `git tag vX.Y.Z && git push --tags`, `npx clawhub@latest publish ./ --version X.Y.Z`. Do not skip the git tag; it's the only version anchor in the repo
 
