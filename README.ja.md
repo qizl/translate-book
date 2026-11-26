@@ -1,14 +1,14 @@
 # Rainman Translate Book
 
-[English](README.md) | [中文](README.zh-CN.md) | 日本語
+[![英語版 README（English）](https://img.shields.io/badge/English-1f6b52)](README.md) [![中国語版 README（中文）](https://img.shields.io/badge/%E4%B8%AD%E6%96%87-1f6b52)](README.zh-CN.md) [![日本語（表示中の言語）](https://img.shields.io/badge/%E6%97%A5%E6%9C%AC%E8%AA%9E-e9c13f)](#rainman-translate-book) [![プロジェクトページ：translate.dyu.sh/en（英語で書かれた 1 ページの紹介）](https://img.shields.io/badge/%E3%83%97%E3%83%AD%E3%82%B8%E3%82%A7%E3%82%AF%E3%83%88%E3%83%9A%E3%83%BC%E3%82%B8-translate.dyu.sh%2Fen_%C2%B7_%E8%8B%B1%E8%AA%9E%E3%81%AE_1_%E3%83%9A%E3%83%BC%E3%82%B8%E7%B4%B9%E4%BB%8B-e9c13f?labelColor=1f6b52)](https://translate.dyu.sh/en/)
 
-Codex、Claude Code、OpenClaw 向けのエージェントスキルです。並列サブエージェントを使い、書籍まるごと（PDF/DOCX/EPUB）を任意の言語に翻訳します。
+Claude Code、Codex、Cursor、OpenClaw をはじめ、Agent Skills に対応したエージェント向けのスキルです。並列サブエージェントを使い、書籍まるごと（PDF/DOCX/EPUB）を任意の言語に翻訳します。
 
 <p align="center">
   <img src="assets/poster/translate-book-poster-en.jpg" alt="translate-book — 書籍まるごとを並列翻訳：チャンクに分割し、8 つの並列サブエージェントで翻訳、検証してから 1 冊の訳書にマージ" width="480">
 </p>
 
-> [claude_translater](https://github.com/wizlijun/claude_translater) に着想を得ています。元のプロジェクトはシェルスクリプトをエントリポイントとし、Claude CLI と複数のステップスクリプトを組み合わせてチャンク単位の翻訳を行います。本プロジェクトはそのワークフローを Codex、Claude Code、OpenClaw 向けのエージェントスキルとして再構成し、サブエージェントによるチャンクの並列翻訳、manifest に基づく整合性チェック、再開可能な実行、複数フォーマット出力を 1 本のパイプラインにまとめています。構成も実装も元のプロジェクトと大きく異なるため、fork ではなく独立したプロジェクトです。
+> [claude_translater](https://github.com/wizlijun/claude_translater) に着想を得ています。元のプロジェクトはシェルスクリプトをエントリポイントとし、Claude CLI と複数のステップスクリプトを組み合わせてチャンク単位の翻訳を行います。本プロジェクトはそのワークフローを Claude Code、Codex、Cursor、OpenClaw などに対応したエージェントスキルとして再構成し、サブエージェントによるチャンクの並列翻訳、manifest に基づく整合性チェック、再開可能な実行、複数フォーマット出力を 1 本のパイプラインにまとめています。構成も実装も元のプロジェクトと大きく異なるため、fork ではなく独立したプロジェクトです。
 
 ---
 
@@ -19,7 +19,7 @@ Input (PDF/DOCX/EPUB)
   │
   ▼
 Calibre ebook-convert → HTMLZ → HTML → Markdown
-  (or Markdown input, e.g. from MinerU / Marker, skipping Calibre)
+  (or Markdown from a layout-aware PDF parser, skipping Calibre)
   │
   ▼
 Split into chunks (chunk0001.md, chunk0002.md, ...)
@@ -45,28 +45,37 @@ Merge → Pandoc → HTML (with TOC) → Calibre → DOCX / EPUB / PDF
 - **manifest による検証** — SHA-256 ハッシュの追跡により、古い出力や壊れた出力がマージされるのを防ぎます
 - **複数フォーマット出力** — HTML（フローティング目次付き）、DOCX、EPUB、PDF
 - **オプションの出力設定** — EPUB 表紙の明示指定、一時ディレクトリの親ディレクトリ変更、ユーザー向けのエクスポート別名
-- **多言語対応** — zh、en、ja、ko、fr、de、es（拡張可能）
-- **PDF/DOCX/EPUB/Markdown 入力** — 変換の重い処理は Calibre が担います。数式や表の多い PDF は、MinerU や Marker で先に Markdown へ抽出できます
+- **多言語対応** — 任意の言語コードを指定できます。例：zh、en、ja、ko、fr、de、es、イタリア語の it、地域付きの zh-TW や pt-BR
+- **PDF/DOCX/EPUB/Markdown 入力** — 変換の重い処理は Calibre が担います。数式や表の多い PDF は、レイアウトを理解するパーサーで先に Markdown へ抽出できます（[ステップ 1](#ステップ-1変換) を参照）
 
 ## 前提条件
 
-- **エージェント実行環境** — Codex、Claude Code、または OpenClaw がインストール済みで、スキルを実行できること
+- **エージェント実行環境** — Agent Skills に対応し、スキルからサブエージェントを起動できるエージェント（[互換性](#互換性) を参照）
 - **Calibre** — `ebook-convert` コマンドが使えること（[ダウンロード](https://calibre-ebook.com/)）
 - **Pandoc** — HTML↔Markdown 変換に使用（[ダウンロード](https://pandoc.org/)）
 - **Python 3** と以下のパッケージ:
-  - `pypandoc` — 必須（`pip install pypandoc`）
+  - `pypandoc` — 任意（`pip install pypandoc`）。ない場合は `pandoc` コマンドを直接呼び出します
   - `beautifulsoup4` — 任意。目次生成の精度が上がります（`pip install beautifulsoup4`）
-- **MinerU または Marker** — 任意。数式や表の多い PDF を事前に Markdown へ抽出する場合のみ（[ステップ 1](#ステップ-1変換) を参照）
+- **レイアウトを理解する PDF パーサー** — 任意。数式や表の多い PDF を事前に Markdown へ抽出する場合のみ。対応パーサーは [ステップ 1](#ステップ-1変換) の表を参照
 
 ## クイックスタート
 
 ### 1. スキルをインストールする
 
-#### Codex
+#### Agent Skills に対応した任意のエージェント
 
 ```bash
-npx skills add deusyu/translate-book -a codex -g
+npx skills add deusyu/translate-book
 ```
+
+どのエージェントにインストールするかを対話形式で尋ねられます。1 つのエージェントにグローバルでインストールするには `-a <agent> -g` を付けます（例: `npx skills add deusyu/translate-book -a cursor -g`）:
+
+| `-a` | インストール先 |
+|------|----------------|
+| `claude-code` | `~/.claude/skills/translate-book` |
+| `codex`、`cursor`、`gemini-cli`、`opencode`、`github-copilot` | `~/.agents/skills/translate-book`（共用） |
+| `antigravity` | `~/.gemini/config/skills/translate-book` |
+| `openclaw` | `~/.openclaw/skills/translate-book` |
 
 手動でインストールする場合:
 
@@ -75,20 +84,25 @@ mkdir -p ~/.agents/skills
 git clone https://github.com/deusyu/translate-book.git ~/.agents/skills/translate-book
 ```
 
-インストールしたスキルが表示されない場合は、Codex を再起動してください。
+Codex、Cursor、Gemini CLI、OpenCode、GitHub Copilot は `~/.agents/skills/` を読み込みます。Claude Code の場合は `~/.claude/skills/translate-book` に clone してください。インストールしたスキルが表示されない場合は、エージェントを再起動してください。
 
-#### Claude Code
+#### プラグインマーケットプレイス（Claude Code、GitHub Copilot CLI）
 
-```bash
-npx skills add deusyu/translate-book -a claude-code -g
+Claude Code では:
+
+```text
+/plugin marketplace add deusyu/translate-book
+/plugin install translate-book@translate-book
 ```
 
-手動でインストールする場合:
+GitHub Copilot CLI では:
 
 ```bash
-mkdir -p ~/.claude/skills
-git clone https://github.com/deusyu/translate-book.git ~/.claude/skills/translate-book
+copilot plugin marketplace add deusyu/translate-book
+copilot plugin install translate-book@translate-book
 ```
+
+プラグインとしてのインストールと skills ディレクトリへのインストールは、どちらか一方にしてください。両方あると、エージェントは両方を読み込みます。Claude Code では、プラグインのスキルは `/translate-book:translate-book` で呼び出します。
 
 #### OpenClaw
 
@@ -108,7 +122,7 @@ $translate-book Translate /path/to/book.pdf into Chinese.
 
 依頼内容がスキルの説明に合致すれば、Codex が自動的にスキルを選ぶこともあります。
 
-#### Claude Code と OpenClaw
+#### その他のエージェント
 
 エージェントにこう依頼します:
 
@@ -116,11 +130,13 @@ $translate-book Translate /path/to/book.pdf into Chinese.
 translate /path/to/book.pdf to Chinese
 ```
 
-Claude Code ではスラッシュコマンドも使えます:
+Claude Code と Cursor ではスラッシュコマンドも使えます:
 
 ```text
 /translate-book translate /path/to/book.pdf to Japanese
 ```
+
+OpenCode では、依頼文に `@translate-book` を含めます。
 
 変換、分割、並列翻訳、検証、マージ、全出力フォーマットの生成まで、スキルがパイプライン全体を自動で処理します。
 
@@ -135,6 +151,43 @@ Claude Code ではスラッシュコマンドも使えます:
 | `book.docx` | Word 文書 |
 | `book.epub` | 電子書籍 |
 | `book.pdf` | 印刷向け PDF |
+
+## 互換性
+
+このスキルには、スキルからサブエージェントを（チャンクごとに 1 つ）起動できるエージェントが必要です。起動できない場合、スキルはその旨を伝えて停止し、1 つのコンテキストで書籍全体を翻訳することはしません。
+
+| エージェント | 状態 | 呼び出し方 |
+|--------------|------|------------|
+| Cursor | 検証済み | `/translate-book`、または依頼内容を伝える |
+| Claude Code | 従来の対応環境（最小テストは未実施） | `/translate-book`（プラグインの場合は `/translate-book:translate-book`）、または依頼内容を伝える |
+| Codex | 検証済み | `$translate-book`、または依頼内容を伝える |
+| OpenClaw | 従来の対応環境（最小テストは未実施） | 依頼内容を伝える |
+| Antigravity | インストール可、未検証 | 依頼内容を伝える |
+| Gemini CLI | インストール可、未検証 | 依頼内容を伝える |
+| OpenCode | インストール可、未検証 | `@translate-book`、または依頼内容を伝える |
+| GitHub Copilot | インストール可、未検証 | 依頼内容を伝える |
+
+「検証済み」は、そのエージェントが次の最小テストに合格したことを意味します。スキルをインストールし、同梱のベースライン書籍を変換します:
+
+```bash
+S=~/.agents/skills/translate-book   # スキルのインストール先
+mkdir -p /tmp/tb-smoke && cd /tmp/tb-smoke
+python3 "$S/scripts/convert.py" "$S/tests/baselines/diligent-dick/diligent-dick.epub" --olang zh
+```
+
+続いてエージェントに次のように依頼します:
+
+```text
+Use the translate-book skill. Do not convert again; the temp directory is /tmp/tb-smoke/diligent-dick_temp. Only handle chunk0045 and chunk0046, concurrency=2, skip the glossary step, launch one sub-agent per chunk as in Step 4 of SKILL.md to translate them into Chinese, and stop when done.
+```
+
+次の 3 点をすべて満たせば合格です:
+
+1. 対話ログに `python3 /絶対パス/scripts/chunk_context.py …` が現れる。`{baseDir}` が実際のパスに解決されたことを示します。
+2. `diligent-dick_temp/output_chunk0045*` と `output_chunk0046*` の書き込み時刻が、もう一方のサブエージェントの実行中に収まっている。メインエージェントが順番に翻訳したのではなく、並列に翻訳されたことを示します。
+3. `python3 "$S/scripts/merge_meta.py" status diligent-dick_temp` が `malformed_meta_files: 0` を出力する。
+
+「検証済み」でないエージェントで試した方は、エージェント名、バージョン、3 点の結果を添えて issue を開いてください。
 
 ## リポジトリのテスト資産
 
@@ -200,13 +253,25 @@ HTML → Markdown の段階では、Calibre のマークアップも構造的に
 Calibre は座標のヒューリスティクスで PDF のテキストを再構成します。普通の文章ならそれで十分ですが、学術書や技術書の PDF では構造が崩れます。数式は断片に分かれ、表は 1 行 1 セルに平坦化され、段組みのページは行が入り混じります。そうした PDF は、まずレイアウトを理解するパーサーで抽出し、出力された Markdown を `convert.py` に渡してください。`.md` / `.markdown` の入力は Calibre を完全にスキップします:
 
 ```bash
-pip install -U "mineru>=4.0,<5"                # or: pip install marker-pdf
-mineru-kit parse paper.pdf -o paper.md         # MinerU >= 4 (CPU-only basic tier: ~0.8 GB of models)
-# marker_single paper.pdf --output_dir out/    # Marker: writes out/paper/paper.md
+mineru-kit parse paper.pdf -o paper.md          # 下の表のどのパーサーでも可
 python3 scripts/convert.py paper.md --olang zh
 ```
 
-これらのパーサーは数式を `$...$` / `$$...$$` の LaTeX として、表を表として保持します。`convert.py` は Markdown ファイルの隣から参照されている画像をコピーし、MinerU がインライン化した base64 画像をデコードして `{book_name}_temp/images/` に保存するため、チャンクに画像データが含まれることはありません。ディスプレイ数式のブロック（`$$ ... $$`）がチャンクをまたいで分割されることはありません。YAML フロントマター（`title`、`author`、`lang`）は `config.txt` に反映され、翻訳には送られません。フロントマターがない場合は、先頭の `#` 見出しが `original_title` になります。一時ディレクトリは Markdown ファイル名にちなんで命名されるため、`paper.md` なら `paper_temp/` です。そのディレクトリが `paper.pdf` から作られたものであれば、`convert.py` はソースのフィンガープリント不一致で中断するので、先に削除してください。どちらのパーサーも初回実行時に ML モデルをダウンロードします。`--strip-page-numbers` と `--detect-page-numbers` は Calibre 経由の入力にのみ適用されます。
+出力される Markdown が次の規約に沿っていれば、どのパーサーでも使えます:
+
+- **数式**: `$...$` / `$$...$$` の LaTeX。ディスプレイ数式のブロックがチャンクをまたいで分割されることはありません。
+- **表**: Markdown のパイプテーブル、または HTML の `<table>`。
+- **画像**: Markdown ファイルと同じディレクトリかそのサブディレクトリにあるファイル、または base64 の data URI としてインライン化されたもの。`convert.py` はこれらを `{book_name}_temp/images/` にコピーまたはデコードするため、チャンクに画像データが含まれることはありません。パスがそのディレクトリの外を指す画像（`..`、絶対パス、シンボリックリンクを経由するもの）はコピーされず、`convert.py` は警告を出して参照をそのまま残します。
+
+| パーサー | インストール | 抽出コマンド | Markdown ファイル | 備考 |
+|---|---|---|---|---|
+| [MinerU](https://github.com/opendatalab/MinerU) >= 4 | `pip install -U "mineru>=4.0,<5"` | `mineru-kit parse paper.pdf -o paper.md` | `paper.md` | CPU のみの basic 構成で約 0.8 GB のモデル |
+| [Marker](https://github.com/datalab-to/marker) | `pip install marker-pdf` | `marker_single paper.pdf --output_dir out/` | `out/paper/paper.md` | |
+| [docling](https://github.com/docling-project/docling) | `pip install docling` | `docling paper.pdf --enrich-formula --output out/` | `out/paper.md` | `--enrich-formula` を付けないと、数式はすべて `<!-- formula-not-decoded -->` になります。認識されるのは独立した行の数式だけで、インライン数式はプレーンテキストのままです |
+
+どのパーサーも初回実行時に ML モデルをダウンロードし、CLI はバージョンによって変わり（フラグが拒否されたら `--help` を確認してください）、ライセンスもそれぞれ異なります。パーサーが落とした数式や画像のプレースホルダー（`<!-- formula-not-decoded -->`、`<!-- image -->`）が Markdown に残っていると、`convert.py` は警告を出します。翻訳の前に、警告が示すフラグを付けて抽出し直してください。インライン数式を含む文書には MinerU か Marker を使ってください。docling が残すのは独立した行の数式だけです。独立した行の数式がいくつもあるのにインライン数式が一つもない場合も、`convert.py` は警告を出します。
+
+YAML フロントマター（`title`、`author`、`lang`）は `config.txt` に反映され、翻訳には送られません。フロントマターがない場合は、先頭の `#` 見出しが `original_title` になります。一時ディレクトリは Markdown ファイル名にちなんで命名されるため、`paper.md` なら `paper_temp/` です。そのディレクトリが `paper.pdf` から作られたものであれば、`convert.py` はソースのフィンガープリント不一致で中断するので、先に削除してください。`--strip-page-numbers` と `--detect-page-numbers` は Calibre 経由の入力にのみ適用されます。
 
 ビルド時、Pandoc は `$...$` / `$$...$$` を MathML としてレンダリングします。そのため数式は `book.html` と `book.pdf` で組版され、`book.epub` でも MathML に対応したリーダーなら組版されます。Calibre の DOCX 出力は MathML を組版できないため、DOCX では数式が平坦なテキストとして表示され、その後に TeX のソースが続きます。
 
@@ -253,16 +318,16 @@ python3 scripts/convert.py paper.md --olang zh
 ### ステップ 3：マージとビルド
 
 ```bash
-python3 scripts/merge_and_build.py --temp-dir book_temp --title "《translated title》"
+python3 scripts/merge_and_build.py --temp-dir book_temp --title "translated title"
 ```
 
 オプションの出力フラグ:
 
 ```bash
-python3 scripts/merge_and_build.py --temp-dir book_temp --title "《translated title》" --cover cover.jpg --export-name "translated-title"
+python3 scripts/merge_and_build.py --temp-dir book_temp --title "translated title" --cover cover.jpg --export-name "translated-title"
 ```
 
-`--cover` は、指定した画像を EPUB を生成する Calibre のステップに渡します。`--export-name` は、パイプラインの正規の成果物 `book.*` を残したまま、`translated-title.epub` のような別名のコピーを作ります。`book_doc` という名前（大文字小文字を区別しない）は予約されており、HTML の別名が `book_doc.html` を上書きしてしまうため、ビルド前に拒否されます。
+`--title` はリーダーのページヘッダーに表示されるメタデータのタイトルになるため、書名号（`《》`）や引用符を付けずに渡してください（外側の `《》` は取り除かれます）。`--cover` は、指定した画像を EPUB を生成する Calibre のステップに渡します。`--export-name` は、パイプラインの正規の成果物 `book.*` を残したまま、`translated-title.epub` のような別名のコピーを作ります。`book_doc` という名前（大文字小文字を区別しない）は予約されており、HTML の別名が `book_doc.html` を上書きしてしまうため、ビルド前に拒否されます。
 
 マージの前に、スクリプトは次の点を検証します:
 - すべてのソースチャンクに対応する出力ファイルがあること（1:1 の対応）
@@ -281,6 +346,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《translated t
 | ファイル | 役割 |
 |------|---------|
 | `SKILL.md` | エージェントスキルの定義 — パイプライン全体をオーケストレーションします |
+| `.claude-plugin/marketplace.json` | Claude Code と GitHub Copilot CLI 向けのプラグインマーケットプレイス定義（単一プラグイン、source は `./`） |
 | `scripts/convert.py` | PDF/DOCX/EPUB → Calibre HTMLZ 経由で Markdown チャンクへ。Markdown 入力は Calibre をスキップ |
 | `scripts/manifest.py` | チャンクの manifest: SHA-256 の追跡とマージ時の検証 |
 | `scripts/glossary.py` | 用語集の管理: 用語を統一するためのチャンクごとの用語表 |
@@ -302,7 +368,10 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《translated t
 | `Calibre ebook-convert not found` | Calibre をインストールし、`ebook-convert` が PATH に含まれていることを確認してください |
 | `Manifest validation failed` | 分割後にソースチャンクが変更されています — `convert.py` を再実行してください |
 | `was created from different source bytes` | 一時ディレクトリが別のソースファイルのものです — 一時ディレクトリを削除するか、新しい `--temp-root` を使ってください |
-| 変換後に PDF の数式や表が崩れる | MinerU または Marker で PDF を抽出し、古い一時ディレクトリを削除してから、`.md` に対して `convert.py` を実行してください（[ステップ 1](#ステップ-1変換) を参照） |
+| 変換後に PDF の数式や表が崩れる | [ステップ 1](#ステップ-1変換) の表にあるパーサーで PDF を抽出し、古い一時ディレクトリを削除してから、`.md` に対して `convert.py` を実行してください |
+| `formula(s) were not decoded` / `image(s) were exported as placeholders` | パーサーがその内容を落としています — 警告が示すフラグを付けて抽出し直し、一時ディレクトリを削除してから `convert.py` を再実行してください |
+| `display formula(s) but no inline math` | パーサーがインライン数式をプレーンテキストにしています（docling の標準パイプラインはそうなります）— MinerU か Marker で抽出し直し、一時ディレクトリを削除してから `convert.py` を再実行してください。文書にもともとインライン数式がなければ無視してかまいません |
+| `pandoc left N formula(s) as raw TeX` | pandoc がその LaTeX を解析できず、数式が `$$...$$` のまま表示されます — 警告に表示された断片を含む `output_chunk*.md` を修正し、`merge_and_build.py` を再実行してください |
 | `Blank output` / `Empty output` | サブエージェントが空白のみ、または空のチャンクを書き出しました — スキルを再実行して再翻訳してください |
 | `Missing source chunk` | ソースファイルが削除されています — `convert.py` を再実行して再生成してください |
 | 翻訳が途中で終わっている | スキルを再実行してください — 止まったところから再開します |
@@ -315,7 +384,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《translated t
 
 ## ロードマップ
 
-[issue #7](https://github.com/deusyu/translate-book/issues/7) で追跡しています — チャンク間での名前や用語の不一致、代名詞や性別の誤りです。現在のパイプラインは、高頻度の固有名詞、別名や綴りの揺れ、隣接チャンクの代名詞コンテキスト、用語集変更後の選択的再翻訳に対応しています。書籍全体を使った実地検証は、今後の品質チェックとして残っています。計画は、それぞれ独立してリリースできる 4 つのフェーズです。
+[issue #7](https://github.com/deusyu/translate-book/issues/7)（チャンク間での名前や用語の不一致、代名詞や性別の誤り）は 2026 年 6 月にクローズし、フェーズ 1〜3 はリリース済みです。現在のパイプラインは、高頻度の固有名詞、別名や綴りの揺れ、隣接チャンクの代名詞コンテキスト、用語集変更後の選択的再翻訳に対応しています。書籍全体を使った実地検証は、今後の品質チェックとして残っています。計画は、それぞれ独立してリリースできる 4 つのフェーズです。
 
 ### 設計原則
 
@@ -351,6 +420,10 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《translated t
 - **Calibre/Pandoc の生成物の、より安全なクリーンアップ（一部リリース済み）。** ページ番号と Calibre マーカーの除去は回帰テストで守られており、年、章番号、単調でない単独の数字は残ります。テストを伴いながら、クリーンアップを段階的に改善していきます。（context: closed #5）
 - **ユーザー向けエクスポート名のオプション（リリース済み）。** `merge_and_build.py --export-name <stem>` は、パイプラインの正規の成果物 `book.html`、`book_doc.html`、`book.docx`、`book.epub`、`book.pdf` を残したまま、別名のコピーを作ります。（context: closed #6）
 
+### 次のステップ — 画像内のテキスト（issue #66）
+
+[issue #66](https://github.com/deusyu/translate-book/issues/66) の最初の部分として、[PR #68](https://github.com/deusyu/translate-book/pull/68) で `scripts/figure_text.py` が追加されました。このスクリプトは、認識待ちの画像を一覧にし、認識結果の sidecar ファイルを検証し、そのテキストをチャンクに挿入して、本文と一緒に翻訳されるようにします。SKILL.md からはまだ呼び出されていません。
+
 ## Star History
 
 このプロジェクトが役に立ったら、ぜひ Star ⭐ をお願いします！
@@ -369,7 +442,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《translated t
 
 お受けできないもの:
 
-- README やドキュメントに、サードパーティのモデルプラットフォームや API 中継サービスのセットアップ手順、base URL、環境変数を掲載すること。translate-book 自体はモデル API を一切呼び出しません。翻訳はユーザー自身のエージェント実行環境（Codex、Claude Code、OpenClaw）の中で行われます。
+- README やドキュメントに、サードパーティのモデルプラットフォームや API 中継サービスのセットアップ手順、base URL、環境変数を掲載すること。translate-book 自体はモデル API を一切呼び出しません。翻訳はユーザー自身のエージェント実行環境（Claude Code、Codex、Cursor、OpenClaw など）の中で行われます。
 
 ## ライセンス
 

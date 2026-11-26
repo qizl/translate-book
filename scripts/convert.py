@@ -5,8 +5,8 @@ Combines the original steps 1-2 into a single script.
 
 Markdown input (.md/.markdown) skips Calibre entirely. Use it for PDFs that
 Calibre's coordinate-heuristic reflow mangles (formulas, tables, multi-column
-layouts): extract them with a layout-aware parser such as MinerU or Marker
-first, then pass the resulting Markdown here.
+layouts): extract them with a layout-aware parser such as MinerU, Marker or
+docling first, then pass the resulting Markdown here.
 """
 
 import os
@@ -120,6 +120,21 @@ def extract_metadata_from_htmlz(extract_dir):
     except Exception as e:
         print(f"Warning: Error extracting metadata: {e}")
         return {}
+
+
+def _html_title(html_file):
+    """The <title> of an HTML file, or None. Calibre copies the book title there."""
+    try:
+        with open(html_file, 'r', encoding='utf-8', errors='replace') as f:
+            head = f.read(65536)
+    except OSError:
+        return None
+    match = re.search(r'<title[^>]*>(.*?)</title>', head, re.IGNORECASE | re.DOTALL)
+    if not match:
+        return None
+    import html as html_lib
+    title = html_lib.unescape(re.sub(r'\s+', ' ', match.group(1))).strip()
+    return title or None
 
 
 def extract_htmlz(htmlz_file, temp_dir):
@@ -538,6 +553,20 @@ def convert_footnotes(blocks):
     return len(used)
 
 
+_URL_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+
+
+def _is_in_book_target(target):
+    """True for a link into the source book rather than out of it.
+
+    Calibre rewrites resolvable in-book links to `#anchor` targets, but a link
+    to a part of the book it did not keep (a cover page, a nav file) stays a
+    relative file link such as `9780063517578_Cover.xhtml#cover`. Neither kind
+    can resolve in the translated book, so both lose their target.
+    """
+    return target.startswith("#") or not _URL_SCHEME.match(target)
+
+
 def _unwrap_inline_markup(inlines):
     """Unwrap spans and in-book links, clear the attributes of other links, and
     drop empty anchors inside text.
@@ -557,7 +586,7 @@ def _unwrap_inline_markup(inlines):
         t = x.get("t")
         if _is_anchor(x):
             continue
-        if t == "Span" or (t == "Link" and (x["c"][2][0].startswith("#") or _is_filler(x))):
+        if t == "Span" or (t == "Link" and (_is_in_book_target(x["c"][2][0]) or _is_filler(x))):
             pending.extend(reversed(x["c"][1]))
         else:
             if t == "Link":
@@ -589,8 +618,9 @@ def clean_calibre_ast(doc):
     """Structural cleanup of a pandoc JSON AST read from Calibre's HTML, in place.
 
     - EPUB footnotes become real pandoc notes (see convert_footnotes()).
-    - In-book links lose their targets but keep their text: the ids they point
-      at do not survive into the translated book.
+    - In-book links (`#anchor` or a relative file such as `Cover.xhtml#c`) lose
+      their targets but keep their text: what they point at does not survive
+      into the translated book.
     - Spans are unwrapped, so `{lang="…"}` and class attributes never reach
       the Markdown.
     - Empty anchors inside text (`<a id="page_12"/>`) are dropped.
@@ -604,25 +634,58 @@ def clean_calibre_ast(doc):
     return footnotes
 
 
-def convert_html_to_markdown(html_file, md_file, strip_page_numbers=False, detect_page_numbers=True):
-    """Convert HTML to Markdown using pandoc"""
+def _pandoc_html_to_json(html_file):
+    """Read an HTML file into a pandoc JSON AST string.
+
+    Uses pypandoc when it is installed and falls back to the pandoc binary, so
+    a machine with pandoc but without the Python wrapper still converts.
+    """
     try:
         import pypandoc
+    except ImportError:
+        pypandoc = None
+    if pypandoc is not None:
+        return pypandoc.convert_file(html_file, 'json')
+    result = subprocess.run(
+        ['pandoc', html_file, '-f', 'html', '-t', 'json'],
+        capture_output=True, text=True, check=True,
+    )
+    return result.stdout
 
-        doc = json.loads(pypandoc.convert_file(html_file, 'json'))
+
+def _pandoc_json_to_markdown(json_text, md_file, extra_args):
+    """Write a pandoc JSON AST string to md_file as pandoc Markdown."""
+    try:
+        import pypandoc
+    except ImportError:
+        pypandoc = None
+    if pypandoc is not None:
+        pypandoc.convert_text(
+            json_text, 'markdown-smart', format='json',
+            outputfile=md_file, extra_args=extra_args,
+        )
+        return
+    subprocess.run(
+        ['pandoc', '-f', 'json', '-t', 'markdown-smart', '-o', md_file, *extra_args],
+        input=json_text, capture_output=True, text=True, check=True,
+    )
+
+
+def convert_html_to_markdown(html_file, md_file, strip_page_numbers=False, detect_page_numbers=True):
+    """Convert HTML to Markdown using pandoc (pypandoc, or the pandoc binary)"""
+    try:
+        doc = json.loads(_pandoc_html_to_json(html_file))
         footnotes = clean_calibre_ast(doc)
         if footnotes:
             print(f"Converted {footnotes} footnote(s) to Markdown footnotes")
-        pypandoc.convert_text(
+        _pandoc_json_to_markdown(
             json.dumps(doc),
+            md_file,
             # Without smart, typographic dashes and quotes stay Unicode instead
             # of becoming ---, -- and backslash-escaped ASCII quotes.
-            'markdown-smart',
-            format='json',
-            outputfile=md_file,
             # block puts each note right after the paragraph citing it, so a
             # note and its reference usually land in the same chunk.
-            extra_args=['--wrap=none', '--reference-location=block'],
+            ['--wrap=none', '--reference-location=block'],
         )
 
         if os.path.exists(md_file):
@@ -645,8 +708,12 @@ def convert_html_to_markdown(html_file, md_file, strip_page_numbers=False, detec
         else:
             print("Markdown file was not created")
             return False
-    except ImportError:
-        print("pypandoc not found. Install with: pip install pypandoc")
+    except FileNotFoundError:
+        print("Neither pypandoc nor the pandoc binary was found. "
+              "Install pandoc (https://pandoc.org/installing.html)")
+        return False
+    except subprocess.CalledProcessError as e:
+        print(f"HTML to Markdown conversion failed: {(e.stderr or '').strip()[-500:]}")
         return False
     except Exception as e:
         print(f"HTML to Markdown conversion failed: {e}")
@@ -829,7 +896,7 @@ def clean_calibre_markers(content, strip_page_numbers=False, detect_page_numbers
 
 
 # =============================================================================
-# Markdown input: pre-extracted Markdown (e.g. from MinerU / Marker) skips Calibre
+# Markdown input: pre-extracted Markdown (e.g. from MinerU / Marker / docling) skips Calibre
 # =============================================================================
 
 MARKDOWN_EXTENSIONS = ('.md', '.markdown')
@@ -844,6 +911,24 @@ _DATA_URI_EXTENSIONS = {
     "jpeg": ".jpg", "jpg": ".jpg", "png": ".png", "gif": ".gif",
     "webp": ".webp", "svg+xml": ".svg", "bmp": ".bmp",
 }
+# Comments a parser leaves where it dropped content; translation cannot bring it back.
+_FORMULA_PLACEHOLDER = "<!-- formula-not-decoded -->"
+_PARSER_PLACEHOLDERS = (
+    (_FORMULA_PLACEHOLDER, "formula(s) were not decoded",
+     "re-extract with formula recognition on (docling: --enrich-formula)"),
+    ("<!-- image -->", "image(s) were exported as placeholders",
+     "re-extract with images embedded or referenced (docling: --image-export-mode embedded)"),
+)
+# Formula models such as docling's write `&` and `\\` rows outside any
+# environment. Pandoc's TeX reader rejects them and prints the formula as raw TeX.
+# A $$...$$ block on lines of its own; like pandoc, never across a blank line.
+_DISPLAY_MATH_RE = re.compile(r'^([ \t]*\$\$)((?:(?!\n[ \t]*\n)[^$])+?)(\$\$[ \t]*)$', re.MULTILINE)
+_TEX_ENV_RE = re.compile(r'\\begin\{([^}]*)\}.*?\\end\{\1\}', re.DOTALL)
+_TEX_ALIGN_TOKEN_RE = re.compile(r'\\\\|\\.|&', re.DOTALL)
+# `$...$` as pandoc reads it: no space just inside either dollar, no digit right after the closing one.
+_INLINE_MATH_RE = re.compile(r'(?<![$\\])\$(?![\s$])(?:\\.|[^$\\\n])+?(?<!\s)\$(?![$\d])')
+# A document with only a formula or two may well have no inline math.
+_INLINE_MATH_CHECK_MIN_DISPLAY = 3
 
 _FRONT_MATTER_RE = re.compile(r'\A---[ \t]*\n(.*?)\n(?:---|\.\.\.)[ \t]*(?:\n|\Z)', re.DOTALL)
 _FRONT_MATTER_KEYS = {
@@ -934,14 +1019,69 @@ def markdown_metadata(content):
     return metadata
 
 
-def import_markdown(md_path, temp_dir):
-    """Return Markdown content ready for chunking, with images moved under temp_dir/images/.
+def align_display_math(content):
+    r"""Wrap display formulas that have bare `&` or `\\` rows in an aligned environment.
 
-    Relative image paths are resolved against the Markdown file's directory
-    and copied in; base64 data URIs (MinerU inlines images that way) are
-    decoded to files so chunks handed to translators never carry image
-    payloads. Remote URLs stay untouched. YAML front matter is dropped from
-    the body — its metadata goes to config.txt via markdown_metadata().
+    Returns (content, number of formulas wrapped). Fenced code is left alone.
+    """
+    wrapped = 0
+
+    def wrap(m):
+        nonlocal wrapped
+        tokens = _TEX_ALIGN_TOKEN_RE.findall(_TEX_ENV_RE.sub('', m.group(2)))
+        if '&' not in tokens and '\\\\' not in tokens:
+            return m.group(0)
+        wrapped += 1
+        return f"{m.group(1)}\\begin{{aligned}}{m.group(2)}\\end{{aligned}}{m.group(3)}"
+
+    lines = content.split('\n')
+    code = _fenced_code_line_indices(lines)
+    parts, start = [], 0
+    for i in range(len(lines) + 1):
+        if i == len(lines) or i in code:
+            if start < i:
+                parts.append(_DISPLAY_MATH_RE.sub(wrap, '\n'.join(lines[start:i])))
+            if i < len(lines):
+                parts.append(lines[i])
+            start = i + 1
+    return '\n'.join(parts), wrapped
+
+
+def formula_counts(content):
+    """Return (display formulas, inline formulas) outside fenced code.
+
+    Placeholders for formulas a parser could not decode count as display formulas.
+    """
+    lines = content.split('\n')
+    code = _fenced_code_line_indices(lines)
+    text = '\n'.join(line for i, line in enumerate(lines) if i not in code)
+    display = len(_DISPLAY_MATH_RE.findall(text)) + text.count(_FORMULA_PLACEHOLDER)
+    inline = len(_INLINE_MATH_RE.findall(_DISPLAY_MATH_RE.sub('', text)))
+    return display, inline
+
+
+def _is_within(path, root):
+    """True if path is root or lies below it. Pass both through os.path.realpath first."""
+    try:
+        return os.path.commonpath([root, path]) == root
+    except ValueError:  # on Windows, paths on different drives
+        return False
+
+
+def import_markdown(md_path, temp_dir):
+    r"""Return Markdown content ready for chunking, with images moved under temp_dir/images/.
+
+    Image paths, relative or absolute, are resolved against the Markdown file's
+    directory and copied in only if they lie inside that directory tree once
+    `..` and symlinks are resolved, so a Markdown file cannot pull other local
+    files into the book. Base64 data URIs (MinerU and docling inline images
+    that way) are decoded to files so chunks handed to translators never carry
+    image payloads. Remote URLs stay untouched. YAML front matter is dropped
+    from the body — its metadata goes to config.txt via markdown_metadata().
+    Display formulas with bare `&` / `\\` rows are wrapped so pandoc can render
+    them. Placeholders a parser left for dropped formulas or images are reported,
+    and so are display formulas without any inline math, the mark of a parser
+    that turned inline math into plain text.
     """
     with open(md_path, 'r', encoding='utf-8') as f:
         content = f.read()
@@ -949,6 +1089,7 @@ def import_markdown(md_path, temp_dir):
     _, content = split_front_matter(content)
 
     md_dir = os.path.dirname(os.path.abspath(md_path))
+    md_root = os.path.realpath(md_dir)
     images_dir = os.path.join(temp_dir, "images")
     refs = {}
     stored = {}
@@ -988,10 +1129,14 @@ def import_markdown(md_path, temp_dir):
             else:
                 print("Warning: could not decode an embedded data-URI image; left inline")
         elif not _URI_SCHEME_RE.match(raw) and not raw.startswith('#'):
-            src = os.path.normpath(os.path.join(md_dir, urllib.parse.unquote(raw)))
-            if os.path.isfile(src):
+            path = os.path.normpath(os.path.join(md_dir, urllib.parse.unquote(raw)))
+            src = os.path.realpath(path)
+            if not _is_within(src, md_root):
+                print("Warning: image outside the Markdown file's directory, not copied, "
+                      f"reference kept as-is: {raw}")
+            elif os.path.isfile(src):
                 with open(src, 'rb') as f:
-                    new_ref = store(os.path.basename(src), f.read())
+                    new_ref = store(os.path.basename(path), f.read())
             else:
                 print(f"Warning: image not found next to the Markdown file, reference kept as-is: {raw}")
         refs[raw] = new_ref
@@ -1004,6 +1149,18 @@ def import_markdown(md_path, temp_dir):
 
     if stored:
         print(f"Localized {len(stored)} image(s) into {images_dir}/")
+    content, aligned = align_display_math(content)
+    if aligned:
+        print(f"Wrapped {aligned} display formula(s) with bare & or \\\\ rows in an aligned environment")
+    for placeholder, what, fix in _PARSER_PLACEHOLDERS:
+        count = content.count(placeholder)
+        if count:
+            print(f"Warning: {count} {what} ({placeholder}); {fix}")
+    display, inline = formula_counts(content)
+    if display >= _INLINE_MATH_CHECK_MIN_DISPLAY and not inline:
+        print(f"Warning: {display} display formula(s) but no inline math; the parser may have "
+              "turned inline math into plain text (docling's standard pipeline does); "
+              "MinerU and Marker keep it as LaTeX")
     return content
 
 
@@ -1435,7 +1592,7 @@ def main():
     parser.add_argument(
         "input_file",
         help="Input file: PDF, DOCX, or EPUB (converted by Calibre), or Markdown (.md/.markdown), "
-             "e.g. the output of a layout-aware PDF parser such as MinerU or Marker",
+             "e.g. the output of a layout-aware PDF parser such as MinerU, Marker or docling",
     )
     parser.add_argument("-l", "--ilang", default="auto", help="Input language (default: auto)")
     parser.add_argument("--olang", default="zh", help="Output language (default: zh)")
@@ -1544,6 +1701,10 @@ def main():
                                     metadata['language'] = value
                 except Exception as e:
                     print(f"Warning: Could not read metadata from config: {e}")
+            if 'title' not in metadata:
+                html_title = _html_title(input_html_path)
+                if html_title:
+                    metadata['title'] = html_title
 
             input_md = os.path.join(temp_dir, "input.md")
             _abort_on_strip_cache_conflict(
@@ -1585,6 +1746,10 @@ def main():
             temp_dir = setup_temp_directory(input_file, html_file, images_dir, temp_root=args.temp_root)
             if not temp_dir:
                 sys.exit(1)
+            # Write the metadata now: later steps can fail (no pandoc, say), and
+            # a re-run takes the cached input.html path, which only finds the
+            # book's title and author in config.txt.
+            create_config_file(temp_dir, input_file, args.ilang, args.olang, metadata)
 
             input_html = os.path.join(temp_dir, "input.html")
             input_md = os.path.join(temp_dir, "input.md")

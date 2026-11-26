@@ -1,10 +1,13 @@
 import contextlib
 import io
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPT_DIR = Path(__file__).resolve().parents[1] / "scripts"
@@ -624,6 +627,24 @@ class CleanCalibreAstMarkupTests(unittest.TestCase):
 
         self.assertEqual(doc["blocks"][0]["c"], [_str("A"), SPACE, _str("B"), SPACE, _str("C")])
 
+    def test_unwraps_links_to_other_files_of_the_source_book(self):
+        # Calibre leaves a link to a part of the EPUB it did not keep (the
+        # cover page) as a relative file link; it cannot resolve after
+        # translation and readers built a one-entry "Cover" TOC from it.
+        doc = _doc(_para(
+            _link("9780063517578_Cover.xhtml#cover", _str("Cover")), SPACE,
+            _link("mailto:me@example.com", _str("mail")), SPACE,
+            _link("http://www.harpercollins.com", _str("hc.com")),
+        ))
+
+        convert.clean_calibre_ast(doc)
+
+        self.assertEqual(
+            doc["blocks"][0]["c"],
+            [_str("Cover"), SPACE, _link("mailto:me@example.com", _str("mail")), SPACE,
+             _link("http://www.harpercollins.com", _str("hc.com"))],
+        )
+
     def test_clears_external_link_attributes(self):
         # Calibre classes such as `pcalibre1` survive on external links and
         # would be written out as `[site](https://example.com){.pcalibre1}`.
@@ -730,6 +751,62 @@ class ConvertHtmlToMarkdownPandocTests(unittest.TestCase):
                 md.read_text(encoding="utf-8").strip(),
                 "1\n\n## Chapter One\n\nOpening text.\n\n4\\. Not a list.",
             )
+
+
+class PandocWithoutPypandocTests(unittest.TestCase):
+    """The pandoc binary is enough: pypandoc is only a convenience wrapper."""
+
+    def test_falls_back_to_the_pandoc_binary(self):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if "-t" in cmd and cmd[cmd.index("-t") + 1] == "json":
+                return mock.Mock(stdout='{"pandoc-api-version":[1,23],"meta":{},"blocks":[]}')
+            Path(cmd[cmd.index("-o") + 1]).write_text("Body text.\n", encoding="utf-8")
+            return mock.Mock(stdout="")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            html = Path(tmp) / "input.html"
+            md = Path(tmp) / "input.md"
+            html.write_text("<p>Body text.</p>", encoding="utf-8")
+            with mock.patch.dict(sys.modules, {"pypandoc": None}), \
+                    mock.patch.object(convert.subprocess, "run", side_effect=fake_run), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertTrue(convert.convert_html_to_markdown(str(html), str(md)))
+            self.assertEqual(md.read_text(encoding="utf-8").strip(), "Body text.")
+
+        self.assertEqual([c[0] for c in calls], ["pandoc", "pandoc"])
+        self.assertIn("--reference-location=block", calls[1])
+
+    def test_reports_missing_pandoc(self):
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            html = Path(tmp) / "input.html"
+            html.write_text("<p>x</p>", encoding="utf-8")
+            with mock.patch.dict(sys.modules, {"pypandoc": None}), \
+                    mock.patch.object(convert.subprocess, "run", side_effect=FileNotFoundError), \
+                    contextlib.redirect_stdout(out):
+                self.assertFalse(convert.convert_html_to_markdown(str(html), str(Path(tmp) / "o.md")))
+        self.assertIn("pandoc", out.getvalue())
+
+
+class HtmlTitleTests(unittest.TestCase):
+    def test_reads_the_title_calibre_copies_into_input_html(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            html = Path(tmp) / "input.html"
+            html.write_text(
+                "<html><head><title>Profits, Prophets &amp;amp;\n Kings</title></head><body/></html>",
+                encoding="utf-8",
+            )
+            self.assertEqual(convert._html_title(str(html)), "Profits, Prophets &amp; Kings")
+
+    def test_missing_title_or_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            html = Path(tmp) / "input.html"
+            html.write_text("<html><body>x</body></html>", encoding="utf-8")
+            self.assertIsNone(convert._html_title(str(html)))
+            self.assertIsNone(convert._html_title(str(Path(tmp) / "none.html")))
 
 
 class TempRootTests(unittest.TestCase):
@@ -1134,6 +1211,117 @@ class ImportMarkdownTests(unittest.TestCase):
             self.assertEqual(content, text)
             self.assertFalse((temp_dir / "images").exists())
 
+    def test_copies_images_from_parser_output_layouts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # docling's referenced image mode writes absolute paths when --output is absolute.
+            absolute = Path(tmp) / "parser_out" / "paper_artifacts" / "image_000001_cd34.png"
+            md = self._source(
+                tmp,
+                "![](_page_0_Picture_1.jpeg)\n"
+                "![](./images/3f2a9c.jpg)\n"
+                "![Image](paper_artifacts/image_000000_ab12.png)\n"
+                f"![Image]({absolute})\n",
+                files=[
+                    ("_page_0_Picture_1.jpeg", b"marker"),
+                    ("images/3f2a9c.jpg", b"mineru"),
+                    ("paper_artifacts/image_000000_ab12.png", b"docling"),
+                    ("paper_artifacts/image_000001_cd34.png", b"docling-abs"),
+                ],
+            )
+            temp_dir = Path(tmp) / "book_temp"
+            out = io.StringIO()
+
+            with contextlib.redirect_stdout(out):
+                content = convert.import_markdown(str(md), str(temp_dir))
+
+            self.assertEqual(
+                content,
+                "![](images/_page_0_Picture_1.jpeg)\n"
+                "![](images/3f2a9c.jpg)\n"
+                "![Image](images/image_000000_ab12.png)\n"
+                "![Image](images/image_000001_cd34.png)\n",
+            )
+            self.assertEqual((temp_dir / "images" / "image_000001_cd34.png").read_bytes(), b"docling-abs")
+            self.assertNotIn("Warning", out.getvalue())
+
+    def test_does_not_copy_images_outside_the_markdown_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            secret = Path(tmp) / "secret.png"
+            secret.write_bytes(b"secret")
+            text = (
+                "![ok](images/ok.png)\n"
+                f"![abs]({secret})\n"
+                "![up](../secret.png)\n"
+                "![encoded](%2E%2E/secret.png)\n"
+                "![nested](images/../../secret.png)\n"
+                f'<img src="{secret}" alt="html"/>\n'
+            )
+            md = self._source(tmp, text, files=[("images/ok.png", b"ok")])
+            temp_dir = Path(tmp) / "book_temp"
+            out = io.StringIO()
+
+            with contextlib.redirect_stdout(out):
+                content = convert.import_markdown(str(md), str(temp_dir))
+
+            self.assertEqual(content, text)
+            self.assertEqual([p.name for p in (temp_dir / "images").iterdir()], ["ok.png"])
+            log = out.getvalue()
+            for raw in (secret, "../secret.png", "%2E%2E/secret.png", "images/../../secret.png"):
+                self.assertIn(
+                    f"Warning: image outside the Markdown file's directory, not copied, "
+                    f"reference kept as-is: {raw}\n",
+                    log,
+                )
+
+    def test_follows_symlinks_only_within_the_markdown_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            outside = Path(tmp) / "outside"
+            outside.mkdir()
+            (outside / "secret.png").write_bytes(b"secret")
+            text = "![in](link_in.png)\n![out](link_out.png)\n![dir](linked/secret.png)\n"
+            md = self._source(tmp, text, files=[("images/fig.png", b"fig")])
+            try:
+                (md.parent / "link_in.png").symlink_to(md.parent / "images" / "fig.png")
+                (md.parent / "link_out.png").symlink_to(outside / "secret.png")
+                (md.parent / "linked").symlink_to(outside, target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"cannot create symlinks here: {exc}")
+            temp_dir = Path(tmp) / "book_temp"
+            out = io.StringIO()
+
+            with contextlib.redirect_stdout(out):
+                content = convert.import_markdown(str(md), str(temp_dir))
+
+            self.assertEqual(content, "![in](images/link_in.png)\n![out](link_out.png)\n![dir](linked/secret.png)\n")
+            self.assertEqual([p.name for p in (temp_dir / "images").iterdir()], ["link_in.png"])
+            self.assertEqual((temp_dir / "images" / "link_in.png").read_bytes(), b"fig")
+            log = out.getvalue()
+            self.assertIn("not copied, reference kept as-is: link_out.png\n", log)
+            self.assertIn("not copied, reference kept as-is: linked/secret.png\n", log)
+
+    def test_markdown_directory_reached_through_a_symlink_keeps_its_images(self):
+        # macOS temp dirs are like this: /var is a symlink to /private/var.
+        with tempfile.TemporaryDirectory() as tmp:
+            alias = Path(tmp) / "alias"
+            md = self._source(
+                tmp,
+                f"![](images/a.png)\n![]({alias / 'images' / 'b.png'})\n",
+                files=[("images/a.png", b"a"), ("images/b.png", b"b")],
+            )
+            try:
+                alias.symlink_to(md.parent, target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"cannot create symlinks here: {exc}")
+            temp_dir = Path(tmp) / "book_temp"
+            out = io.StringIO()
+
+            with contextlib.redirect_stdout(out):
+                content = convert.import_markdown(str(alias / md.name), str(temp_dir))
+
+            self.assertEqual(content, "![](images/a.png)\n![](images/b.png)\n")
+            self.assertEqual(sorted(p.name for p in (temp_dir / "images").iterdir()), ["a.png", "b.png"])
+            self.assertNotIn("Warning", out.getvalue())
+
     def test_strips_front_matter_from_body(self):
         with tempfile.TemporaryDirectory() as tmp:
             md = self._source(tmp, "---\ntitle: Paper\n---\n# Paper\n\nBody\n")
@@ -1141,6 +1329,126 @@ class ImportMarkdownTests(unittest.TestCase):
             content = convert.import_markdown(str(md), str(Path(tmp) / "book_temp"))
 
             self.assertEqual(content, "# Paper\n\nBody\n")
+
+    def test_docling_output_keeps_math_and_tables_and_warns_on_placeholders(self):
+        import base64
+
+        payload = base64.b64encode(PNG_BYTES).decode("ascii")
+        with tempfile.TemporaryDirectory() as tmp:
+            md = self._source(
+                tmp,
+                "## 3.2 Scaled Dot-Product Attention\n\n"
+                f"![Image](data:image/png;base64,{payload})\n\n"
+                "$$\\mathrm{Attention}(Q, K, V) = \\mathrm{softmax}(QK^T / \\sqrt{d_k})V$$\n\n"
+                "| Model | BLEU |\n|---|---|\n| Transformer | 28.4 |\n\n"
+                "<!-- formula-not-decoded -->\n\n"
+                "<!-- formula-not-decoded -->\n\n"
+                "<!-- image -->\n",
+            )
+            temp_dir = Path(tmp) / "book_temp"
+            out = io.StringIO()
+
+            with contextlib.redirect_stdout(out):
+                content = convert.import_markdown(str(md), str(temp_dir))
+
+            self.assertIn("![Image](images/embedded-0001.png)", content)
+            self.assertIn("$$\\mathrm{Attention}(Q, K, V) = \\mathrm{softmax}(QK^T / \\sqrt{d_k})V$$", content)
+            self.assertIn("| Transformer | 28.4 |", content)
+            self.assertEqual((temp_dir / "images" / "embedded-0001.png").read_bytes(), PNG_BYTES)
+            log = out.getvalue()
+            self.assertIn("Warning: 2 formula(s) were not decoded", log)
+            self.assertIn("--enrich-formula", log)
+            self.assertIn("Warning: 1 image(s) were exported as placeholders", log)
+            self.assertIn("Warning: 3 display formula(s) but no inline math", log)
+
+    def test_clean_markdown_has_no_placeholder_warning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            md = self._source(tmp, "$$x_1 + x_2$$\n\n| a | b |\n|---|---|\n")
+            out = io.StringIO()
+
+            with contextlib.redirect_stdout(out):
+                convert.import_markdown(str(md), str(Path(tmp) / "book_temp"))
+
+            self.assertNotIn("Warning", out.getvalue())
+
+    # Shaped like docling's formula output for arXiv 1706.03762: an equation
+    # number column, a two-row formula, and a trailing row break.
+    DOCLING_FORMULAS = [
+        r"$$A t t e n t i o n ( Q , K , V ) = \text {softmax} ( \frac { Q K ^ { T } } { \sqrt { d _ { k } } } ) V & & ( 1 )$$",
+        r"$$P E _ { ( p o s , 2 i ) } & = s i n ( p o s / 1 0 0 0 0 ^ { 2 i / d } ) \\ P E _ { ( p o s , 2 i + 1 ) } & = c o s ( p o s / 1 0 0 0 0 ^ { 2 i / d } )$$",
+        r"$$l r a t e = d _ { \text {model} } ^ { - 0 . 5 } \cdot \min ( s t e p ^ { - 0 . 5 } , w a r m u p ^ { - 1 . 5 } ) \quad \\$$",
+    ]
+
+    def test_wraps_display_math_with_bare_alignment_rows(self):
+        unchanged = [
+            r"$$\text{R\&D} = \begin{cases} a & b \\ c & d \end{cases}$$",
+            r"$$x_1 + x_2$$",
+            "Inline $a & b$ stays.",
+        ]
+        multiline = "$$\na &= b \\\\\nc &= d\n$$"
+        code = "```latex\n$$a & b$$\n```"
+        content = "\n\n".join(self.DOCLING_FORMULAS + unchanged + [multiline, code]) + "\n"
+
+        aligned, count = convert.align_display_math(content)
+
+        self.assertEqual(count, 4)
+        for formula in self.DOCLING_FORMULAS:
+            self.assertIn("$$\\begin{aligned}" + formula[2:-2] + "\\end{aligned}$$", aligned)
+        for text in unchanged + [code]:
+            self.assertIn(text, aligned)
+        self.assertIn("$$\\begin{aligned}\na &= b \\\\\nc &= d\n\\end{aligned}$$", aligned)
+        self.assertEqual(convert.align_display_math(aligned), (aligned, 0))
+
+    def test_import_reports_wrapped_formulas(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            md = self._source(tmp, self.DOCLING_FORMULAS[0] + "\n")
+            out = io.StringIO()
+
+            with contextlib.redirect_stdout(out):
+                content = convert.import_markdown(str(md), str(Path(tmp) / "book_temp"))
+
+        self.assertTrue(content.startswith("$$\\begin{aligned}A t t e n t i o n"))
+        self.assertIn("Wrapped 1 display formula(s)", out.getvalue())
+
+    def test_formula_counts(self):
+        content = (
+            "$$a + b$$\n\n"
+            "Text $x$ and $\\{y\\}$, but prices $5 and $10 and \\$3 are not math.\n\n"
+            "```\n$z$\n$$w$$\n```\n\n"
+            "<!-- formula-not-decoded -->\n"
+        )
+
+        self.assertEqual(convert.formula_counts(content), (2, 2))
+
+    def test_warns_when_display_formulas_come_without_inline_math(self):
+        display = "$$a + b$$\n\n$$c^2$$\n\n$$x_1$$\n\n"
+        cases = {
+            "flattened": (display + "Queries live in Rdmodel×dk and cost $5 and $10.\n", True),
+            "inline kept": (display + "Queries live in $\\mathbb{R}^{d}$.\n", False),
+            "few formulas": ("$$a + b$$\n\n$$c^2$$\n\nNo inline math.\n", False),
+            "placeholders": ("<!-- formula-not-decoded -->\n\n" * 3, True),
+            "inline only in code": (display + "```\n$x$\n```\n", True),
+        }
+        for name, (markdown, warns) in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
+                md = self._source(tmp, markdown)
+                out = io.StringIO()
+
+                with contextlib.redirect_stdout(out):
+                    convert.import_markdown(str(md), str(Path(tmp) / "book_temp"))
+
+                self.assertEqual("but no inline math" in out.getvalue(), warns)
+
+    @unittest.skipUnless(shutil.which("pandoc"), "pandoc is not installed")
+    def test_wrapped_formulas_render_as_mathml(self):
+        content, _ = convert.align_display_math("\n\n".join(self.DOCLING_FORMULAS) + "\n")
+        result = subprocess.run(
+            ["pandoc", "--from", "markdown+smart+east_asian_line_breaks", "--to", "html5", "--mathml"],
+            input=content, capture_output=True, text=True, check=True,
+        )
+
+        self.assertEqual(result.stdout.count("<math"), 3)
+        self.assertNotIn("Could not convert TeX math", result.stderr)
 
 
 class MarkdownMetadataTests(unittest.TestCase):

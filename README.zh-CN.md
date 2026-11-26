@@ -1,14 +1,14 @@
 # Rainman Translate Book
 
-[English](README.md) | 中文 | [日本語](README.ja.md)
+[![英文版 README（English）](https://img.shields.io/badge/English-1f6b52)](README.md) [![中文（当前语言）](https://img.shields.io/badge/%E4%B8%AD%E6%96%87-e9c13f)](#rainman-translate-book) [![日文版 README（日本語）](https://img.shields.io/badge/%E6%97%A5%E6%9C%AC%E8%AA%9E-1f6b52)](README.ja.md) [![项目页：translate.dyu.sh，一页中文导读](https://img.shields.io/badge/%E9%A1%B9%E7%9B%AE%E9%A1%B5-translate.dyu.sh_%C2%B7_%E4%B8%80%E9%A1%B5%E4%B8%AD%E6%96%87%E5%AF%BC%E8%AF%BB-e9c13f?labelColor=1f6b52)](https://translate.dyu.sh/)
 
-面向 Codex、Claude Code 和 OpenClaw 的 Agent Skill，使用并行 subagent 将整本书（PDF/DOCX/EPUB）翻译成任意语言。
+面向 Claude Code、Codex、Cursor、OpenClaw 等支持 Agent Skills 的 agent，使用并行 subagent 将整本书（PDF/DOCX/EPUB）翻译成任意语言。
 
 <p align="center">
   <img src="assets/poster/translate-book-poster.jpg" alt="translate-book 项目海报——一整本书,并行翻译:拆块后由 8 个并行子代理同时翻译,校验合并成完整译本" width="480">
 </p>
 
-> 本项目受 [claude_translater](https://github.com/wizlijun/claude_translater) 启发。原项目以 shell 脚本为入口，配合 Claude CLI 和多个步骤脚本完成分块翻译；本项目则将流程重构为可在 Codex、Claude Code 和 OpenClaw 中使用的 Agent Skill，使用 subagent 按 chunk 并行翻译，并引入 manifest 驱动的完整性校验，将续跑和多格式输出整合为更统一的流水线。由于项目结构和实现方式均与原项目不同，本项目为独立实现，而非 fork。
+> 本项目受 [claude_translater](https://github.com/wizlijun/claude_translater) 启发。原项目以 shell 脚本为入口，配合 Claude CLI 和多个步骤脚本完成分块翻译；本项目则将流程重构为可在 Claude Code、Codex、Cursor、OpenClaw 等 agent 中使用的 Agent Skill，使用 subagent 按 chunk 并行翻译，并引入 manifest 驱动的完整性校验，将续跑和多格式输出整合为更统一的流水线。由于项目结构和实现方式均与原项目不同，本项目为独立实现，而非 fork。
 
 ---
 
@@ -19,7 +19,7 @@
   │
   ▼
 Calibre ebook-convert → HTMLZ → HTML → Markdown
-  （或直接输入 Markdown，例如 MinerU / Marker 的输出，绕过 Calibre）
+  （或直接输入版面感知解析器转出的 Markdown，绕过 Calibre）
   │
   ▼
 拆分为 chunk（chunk0001.md, chunk0002.md, ...）
@@ -45,28 +45,37 @@ Calibre ebook-convert → HTMLZ → HTML → Markdown
 - **Manifest 校验** — SHA-256 hash 追踪，防止过时或损坏的输出被合并
 - **多格式输出** — HTML（含浮动目录）、DOCX、EPUB、PDF
 - **可选输出控制** — 显式 EPUB 封面、自定义 temp root、面向用户的导出别名
-- **多语言** — zh、en、ja、ko、fr、de、es（可扩展）
-- **多格式输入** — PDF/DOCX/EPUB/Markdown，Calibre 负责格式转换；公式、表格密集的 PDF 可先用 MinerU 或 Marker 转成 Markdown
+- **多语言** — 任意语言代码，例如 zh、en、ja、ko、fr、de、es、意大利语 it，也可以带地区，例如 zh-TW、pt-BR
+- **多格式输入** — PDF/DOCX/EPUB/Markdown，Calibre 负责格式转换；公式、表格密集的 PDF 可先用版面感知解析器转成 Markdown（见[第一步](#第一步转换)）
 
 ## 前置要求
 
-- **Agent 运行环境** — Codex、Claude Code 或 OpenClaw，已安装并可运行 Skill
+- **Agent 运行环境** — 任何支持 Agent Skills、能从 Skill 里派出子 agent 的 agent（见[兼容性](#兼容性)）
 - **Calibre** — `ebook-convert` 命令可用（[下载](https://calibre-ebook.com/)）
 - **Pandoc** — 用于 HTML↔Markdown 转换（[下载](https://pandoc.org/)）
 - **Python 3**，需要：
-  - `pypandoc` — 必需（`pip install pypandoc`）
+  - `pypandoc` — 可选（`pip install pypandoc`）；没有时直接调用 `pandoc` 命令
   - `beautifulsoup4` — 可选，用于更好的目录生成（`pip install beautifulsoup4`）
-- **MinerU 或 Marker** — 可选，仅用于把公式、表格密集的 PDF 预先转成 Markdown（见[第一步](#第一步转换)）
+- **版面感知 PDF 解析器** — 可选，仅用于把公式、表格密集的 PDF 预先转成 Markdown；支持的解析器见[第一步](#第一步转换)中的表格
 
 ## 快速开始
 
 ### 1. 安装 Skill
 
-#### Codex
+#### 任何支持 Agent Skills 的 agent
 
 ```bash
-npx skills add deusyu/translate-book -a codex -g
+npx skills add deusyu/translate-book
 ```
+
+命令会询问要装给哪些 agent。只给某一个 agent 全局安装时加 `-a <agent> -g`，例如 `npx skills add deusyu/translate-book -a cursor -g`：
+
+| `-a` | 安装目录 |
+|------|----------|
+| `claude-code` | `~/.claude/skills/translate-book` |
+| `codex`、`cursor`、`gemini-cli`、`opencode`、`github-copilot` | `~/.agents/skills/translate-book`（共用） |
+| `antigravity` | `~/.gemini/config/skills/translate-book` |
+| `openclaw` | `~/.openclaw/skills/translate-book` |
 
 或手动安装：
 
@@ -75,20 +84,25 @@ mkdir -p ~/.agents/skills
 git clone https://github.com/deusyu/translate-book.git ~/.agents/skills/translate-book
 ```
 
-如果新安装的 Skill 没有出现，请重启 Codex。
+Codex、Cursor、Gemini CLI、OpenCode 和 GitHub Copilot 都读 `~/.agents/skills/`。Claude Code 要改为 clone 到 `~/.claude/skills/translate-book`。如果新安装的 Skill 没有出现，请重启 agent。
 
-#### Claude Code
+#### 插件市场（Claude Code、GitHub Copilot CLI）
 
-```bash
-npx skills add deusyu/translate-book -a claude-code -g
+在 Claude Code 中：
+
+```text
+/plugin marketplace add deusyu/translate-book
+/plugin install translate-book@translate-book
 ```
 
-或手动安装：
+在 GitHub Copilot CLI 中：
 
 ```bash
-mkdir -p ~/.claude/skills
-git clone https://github.com/deusyu/translate-book.git ~/.claude/skills/translate-book
+copilot plugin marketplace add deusyu/translate-book
+copilot plugin install translate-book@translate-book
 ```
+
+插件安装和 skills 目录安装二选一：agent 找到两份时会同时加载。在 Claude Code 中，插件里的 Skill 用 `/translate-book:translate-book` 调用。
 
 #### OpenClaw
 
@@ -108,7 +122,7 @@ $translate-book Translate /path/to/book.pdf into Chinese.
 
 当请求与 Skill 描述匹配时，Codex 也可以自动选择该 Skill。
 
-#### Claude Code 和 OpenClaw
+#### 其他 agent
 
 直接告诉 Agent：
 
@@ -116,11 +130,13 @@ $translate-book Translate /path/to/book.pdf into Chinese.
 translate /path/to/book.pdf to Chinese
 ```
 
-在 Claude Code 中也可以使用斜杠命令：
+在 Claude Code 和 Cursor 中也可以使用斜杠命令：
 
 ```text
 /translate-book translate /path/to/book.pdf to Japanese
 ```
+
+在 OpenCode 中，在请求里写上 `@translate-book`。
 
 Skill 自动处理完整流程 — 转换、拆分、并行翻译、校验、合并、生成所有输出格式。
 
@@ -135,6 +151,43 @@ Skill 自动处理完整流程 — 转换、拆分、并行翻译、校验、合
 | `book.docx` | Word 文档 |
 | `book.epub` | 电子书 |
 | `book.pdf` | 可打印 PDF |
+
+## 兼容性
+
+这个 Skill 需要 agent 能从 Skill 里派出子 agent，每个 chunk 一个。agent 做不到时，Skill 会说明原因并停下，不会在一个上下文里把整本书翻完。
+
+| Agent | 状态 | 调用方式 |
+|-------|------|----------|
+| Cursor | 已验证 | `/translate-book`，或直接描述需求 |
+| Claude Code | 原有宿主，尚未补跑最小实测 | `/translate-book`（插件安装时为 `/translate-book:translate-book`），或直接描述需求 |
+| Codex | 已验证 | `$translate-book`，或直接描述需求 |
+| OpenClaw | 原有宿主，尚未补跑最小实测 | 直接描述需求 |
+| Antigravity | 可安装、待验证 | 直接描述需求 |
+| Gemini CLI | 可安装、待验证 | 直接描述需求 |
+| OpenCode | 可安装、待验证 | `@translate-book`，或直接描述需求 |
+| GitHub Copilot | 可安装、待验证 | 直接描述需求 |
+
+「已验证」指该 agent 通过了下面的最小实测。先安装 Skill，再转换随 Skill 一起装上的基准书：
+
+```bash
+S=~/.agents/skills/translate-book   # Skill 的安装目录
+mkdir -p /tmp/tb-smoke && cd /tmp/tb-smoke
+python3 "$S/scripts/convert.py" "$S/tests/baselines/diligent-dick/diligent-dick.epub" --olang zh
+```
+
+然后在 agent 里输入：
+
+```text
+用 translate-book skill。不要重新转换，临时目录已经是 /tmp/tb-smoke/diligent-dick_temp。只处理 chunk0045 和 chunk0046，concurrency=2，跳过术语表步骤，按 SKILL.md 第 4 步各派一个子代理翻成中文，完成后停下。
+```
+
+三条都满足才算通过：
+
+1. 对话记录里出现过 `python3 /绝对路径/scripts/chunk_context.py …`，说明 `{baseDir}` 被解析成了真实路径。
+2. `diligent-dick_temp/output_chunk0045*` 和 `output_chunk0046*` 的写入时间落在另一个子 agent 的运行期间，说明两个 chunk 是并行翻译的，不是主 agent 自己挨个翻。
+3. `python3 "$S/scripts/merge_meta.py" status diligent-dick_temp` 输出 `malformed_meta_files: 0`。
+
+在没标「已验证」的 agent 上跑过？欢迎开 issue，写明 agent、版本和三条结果。
 
 ## 仓库测试资产
 
@@ -200,13 +253,25 @@ HTML → Markdown 这一步还会按结构清理 Calibre 的标记。EPUB 脚注
 Calibre 靠坐标启发式重排 PDF 文本，对普通正文够用，但学术、技术类 PDF 会丢失结构：公式被拆成碎片，表格被拍平成一行一个单元格，多栏版面相互交错。对这类 PDF，先用版面感知解析器转出 Markdown，再把 Markdown 交给 `convert.py`。`.md` / `.markdown` 输入完全不经过 Calibre：
 
 ```bash
-pip install -U "mineru>=4.0,<5"                # 或：pip install marker-pdf
-mineru-kit parse paper.pdf -o paper.md         # MinerU >= 4（纯 CPU 的 basic 档约需 0.8 GB 模型）
-# marker_single paper.pdf --output_dir out/    # Marker：输出为 out/paper/paper.md
+mineru-kit parse paper.pdf -o paper.md          # 换成下表中任一解析器均可
 python3 scripts/convert.py paper.md --olang zh
 ```
 
-解析器会把公式保留为 `$...$` / `$$...$$` LaTeX，表格保留为表格。`convert.py` 会把 Markdown 旁边引用的图片复制到 `{book_name}_temp/images/`，MinerU 以 base64 内嵌的图片也会解码成文件放进去，chunk 中不会夹带图片数据。公式块（`$$ ... $$`）不会被拆到两个 chunk 中。YAML front matter（`title`、`author`、`lang`）会写入 `config.txt`，不会送去翻译；没有 front matter 时，开头的 `#` 标题作为 `original_title`。temp 目录按 Markdown 文件名命名，`paper.md` 对应 `paper_temp/`；如果该目录之前由 `paper.pdf` 生成，`convert.py` 会因源文件指纹不一致而中止，需先删除它。两个解析器首次运行都会下载模型。`--strip-page-numbers` 和 `--detect-page-numbers` 只对 Calibre 输入生效。
+只要输出的 Markdown 符合以下约定，用哪个解析器都可以：
+
+- **公式**：`$...$` / `$$...$$` LaTeX。公式块不会被拆到两个 chunk 中。
+- **表格**：Markdown 管道表格或 HTML `<table>`。
+- **图片**：放在 Markdown 文件所在目录或其子目录中，或以 base64 data URI 内嵌。`convert.py` 会把它们复制或解码到 `{book_name}_temp/images/`，chunk 中不会夹带图片数据。路径指向该目录之外的图片（经由 `..`、绝对路径或符号链接）不会被复制：`convert.py` 给出警告，引用保持原样。
+
+| 解析器 | 安装 | 提取命令 | Markdown 文件 | 备注 |
+|---|---|---|---|---|
+| [MinerU](https://github.com/opendatalab/MinerU) >= 4 | `pip install -U "mineru>=4.0,<5"` | `mineru-kit parse paper.pdf -o paper.md` | `paper.md` | 纯 CPU 的 basic 档约需 0.8 GB 模型 |
+| [Marker](https://github.com/datalab-to/marker) | `pip install marker-pdf` | `marker_single paper.pdf --output_dir out/` | `out/paper/paper.md` | |
+| [docling](https://github.com/docling-project/docling) | `pip install docling` | `docling paper.pdf --enrich-formula --output out/` | `out/paper.md` | 不加 `--enrich-formula` 时，每个公式都会变成 `<!-- formula-not-decoded -->`。只识别独立成行的公式，行内公式会变成普通文字 |
+
+这些解析器首次运行都会下载模型，命令行参数随版本变化（参数被拒时查看 `--help`），许可证也各不相同。如果 Markdown 里还留着解析器为丢弃的公式或图片写下的占位符（`<!-- formula-not-decoded -->`、`<!-- image -->`），`convert.py` 会给出警告：翻译前请按警告里的参数重新提取。有行内公式的文档请用 MinerU 或 Marker：docling 只保留独立成行的公式；Markdown 里有好几个独立成行的公式、却没有一个行内公式时，`convert.py` 也会给出警告。
+
+YAML front matter（`title`、`author`、`lang`）会写入 `config.txt`，不会送去翻译；没有 front matter 时，开头的 `#` 标题作为 `original_title`。temp 目录按 Markdown 文件名命名，`paper.md` 对应 `paper_temp/`；如果该目录之前由 `paper.pdf` 生成，`convert.py` 会因源文件指纹不一致而中止，需先删除它。`--strip-page-numbers` 和 `--detect-page-numbers` 只对 Calibre 输入生效。
 
 生成成品时，Pandoc 会把 `$...$` / `$$...$$` 渲染为 MathML，因此 `book.html`、`book.pdf` 中的公式会被正确排版，`book.epub` 在支持 MathML 的阅读器中同样如此。Calibre 生成的 DOCX 无法排版 MathML，其中的公式会显示为压平的文本加上对应的 TeX 源码。
 
@@ -253,16 +318,16 @@ Skill 分批启动 subagent（默认 8 路并发）。每个 subagent：
 ### 第三步：合并与构建
 
 ```bash
-python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名》"
+python3 scripts/merge_and_build.py --temp-dir book_temp --title "译后书名"
 ```
 
 可选输出参数：
 
 ```bash
-python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名》" --cover cover.jpg --export-name "译后书名"
+python3 scripts/merge_and_build.py --temp-dir book_temp --title "译后书名" --cover cover.jpg --export-name "译后书名"
 ```
 
-`--cover` 会把显式封面图传给 EPUB 的 Calibre 步骤。`--export-name` 会额外生成如 `译后书名.epub` 的别名副本，同时保留内部 canonical 的 `book.*` 产物。`book_doc` 是保留名称（不区分大小写），会在构建前被拒绝，因为其 HTML 别名会覆盖 `book_doc.html`。
+`--title` 会成为阅读器页眉里显示的元数据书名，传入时不要加书名号或引号（外层的 `《》` 会被去掉）。`--cover` 会把显式封面图传给 EPUB 的 Calibre 步骤。`--export-name` 会额外生成如 `译后书名.epub` 的别名副本，同时保留内部 canonical 的 `book.*` 产物。`book_doc` 是保留名称（不区分大小写），会在构建前被拒绝，因为其 HTML 别名会覆盖 `book_doc.html`。
 
 合并前校验：
 - 每个源 chunk 都有对应的输出文件（1:1 匹配）
@@ -281,6 +346,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名
 | 文件 | 用途 |
 |------|------|
 | `SKILL.md` | Agent Skill 定义 — 编排完整流程 |
+| `.claude-plugin/marketplace.json` | Claude Code 和 GitHub Copilot CLI 的插件市场清单（单个插件，source 为 `./`） |
 | `scripts/convert.py` | PDF/DOCX/EPUB → Markdown chunks（经 Calibre HTMLZ）；Markdown 输入不经过 Calibre |
 | `scripts/manifest.py` | Chunk manifest：SHA-256 追踪与合并校验 |
 | `scripts/glossary.py` | 术语表管理：为每个 chunk 生成专属术语对照表，保证全书译名一致 |
@@ -302,7 +368,10 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名
 | `Calibre ebook-convert not found` | 安装 Calibre，确保 `ebook-convert` 在 PATH 中 |
 | `Manifest validation failed` | 源 chunk 在拆分后被修改 — 重新运行 `convert.py` |
 | `was created from different source bytes` | temp 目录属于另一个源文件 — 删除 temp 目录或换一个 `--temp-root` |
-| PDF 转换后公式、表格错乱 | 用 MinerU 或 Marker 转出 Markdown，删除旧 temp 目录，再对 `.md` 运行 `convert.py`（见[第一步](#第一步转换)） |
+| PDF 转换后公式、表格错乱 | 用[第一步](#第一步转换)表格中的解析器转出 Markdown，删除旧 temp 目录，再对 `.md` 运行 `convert.py` |
+| `formula(s) were not decoded` / `image(s) were exported as placeholders` | 解析器丢弃了这些内容 — 按警告里的参数重新提取，删除 temp 目录，再运行 `convert.py` |
+| `display formula(s) but no inline math` | 解析器把行内公式压成了普通文字（docling 的标准流程就会这样）— 改用 MinerU 或 Marker 重新提取，删除 temp 目录，再运行 `convert.py`。如果文档本来就没有行内公式，忽略即可 |
+| `pandoc left N formula(s) as raw TeX` | pandoc 解析不了这段 LaTeX，公式会以 `$$...$$` 原文显示 — 用警告打印的片段找到对应的 `output_chunk*.md` 改正，再运行 `merge_and_build.py` |
 | `Blank output` / `Empty output` | 某个 subagent 写出了空白或空的 chunk — 重新运行 skill 让它重译 |
 | `Missing source chunk` | 源文件被删除 — 重新运行 `convert.py` 重新生成 |
 | 翻译不完整 | 重新运行 Skill，会从中断处继续 |
@@ -315,7 +384,7 @@ python3 scripts/merge_and_build.py --temp-dir book_temp --title "《译后书名
 
 ## 后续规划
 
-跟踪 [issue #7](https://github.com/deusyu/translate-book/issues/7) — chunk 之间的人名/术语不一致以及代词/性别错误。当前流水线已覆盖高频实体、别名/拼写漂移、相邻 chunk 的代词上下文，以及术语表变更后的精确重译。整书自然度校验仍是后续质量阶段。整体方案分为四个可独立交付的阶段。
+[issue #7](https://github.com/deusyu/translate-book/issues/7)（chunk 之间的人名/术语不一致以及代词/性别错误）已于 2026 年 6 月关闭，Phase 1–3 均已发布。当前流水线已覆盖高频实体、别名/拼写漂移、相邻 chunk 的代词上下文，以及术语表变更后的精确重译。整书自然度校验仍是后续质量阶段。整体方案分为四个可独立交付的阶段。
 
 ### 设计原则
 
@@ -351,6 +420,10 @@ Phase 1 让术语表按批次增长,因此第一批看到的术语表最小,drif
 - **更安全的 Calibre/Pandoc 噪声清理（部分已发布）**。页码和 Calibre marker 清理已有回归测试保护，保留年份、章节编号和非单调独立数字。后续清理规则继续在测试下增量增加。(context: closed #5)
 - **可选的面向用户导出文件名（已发布）**。`merge_and_build.py --export-name <stem>` 生成 alias/copy，同时流水线内部 canonical 产物仍保持 `book.html`、`book_doc.html`、`book.docx`、`book.epub`、`book.pdf`。(context: closed #6)
 
+### 下一步 — 图内文字（issue #66）
+
+[PR #68](https://github.com/deusyu/translate-book/pull/68) 是 [issue #66](https://github.com/deusyu/translate-book/issues/66) 的第一部分，新增了 `scripts/figure_text.py`：列出待识别的图片、校验识别结果的 sidecar 文件、把识别出的文字注入 chunk，让它和正文一起翻译。SKILL.md 目前还没有调用它。
+
 ## Star History
 
 如果这个项目对您有帮助，请考虑为其点亮一颗 Star ⭐！
@@ -369,7 +442,7 @@ Phase 1 让术语表按批次增长,因此第一批看到的术语表最小,drif
 
 不接受：
 
-- 在 README 或文档中加入第三方模型平台 / API 中转站的配置教程、Base URL 或环境变量。translate-book 本身不调用任何模型 API，翻译在用户自己的 agent 宿主（Codex、Claude Code、OpenClaw）里完成。
+- 在 README 或文档中加入第三方模型平台 / API 中转站的配置教程、Base URL 或环境变量。translate-book 本身不调用任何模型 API，翻译在用户自己的 agent 宿主（Claude Code、Codex、Cursor、OpenClaw 等）里完成。
 
 ## License
 

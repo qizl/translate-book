@@ -1,14 +1,14 @@
 # Rainman Translate Book
 
-English | [中文](README.zh-CN.md) | [日本語](README.ja.md)
+[![English (current language)](https://img.shields.io/badge/English-e9c13f)](#rainman-translate-book) [![Read in Chinese (中文)](https://img.shields.io/badge/%E4%B8%AD%E6%96%87-1f6b52)](README.zh-CN.md) [![Read in Japanese (日本語)](https://img.shields.io/badge/%E6%97%A5%E6%9C%AC%E8%AA%9E-1f6b52)](README.ja.md) [![Project page: translate.dyu.sh/en, a one-page guide](https://img.shields.io/badge/Project_page-translate.dyu.sh%2Fen_%C2%B7_a_one--page_guide-e9c13f?labelColor=1f6b52)](https://translate.dyu.sh/en/)
 
-An agent skill for Codex, Claude Code, and OpenClaw that translates entire books (PDF/DOCX/EPUB) into any language using parallel subagents.
+An Agent Skill for Claude Code, Codex, Cursor, OpenClaw and other Agent Skills–compatible agents that translates entire books (PDF/DOCX/EPUB) into any language using parallel subagents.
 
 <p align="center">
   <img src="assets/poster/translate-book-poster-en.jpg" alt="translate-book — a whole book, translated in parallel: split into chunks, translated by 8 parallel sub-agents, verified and merged into a complete book" width="480">
 </p>
 
-> Inspired by [claude_translater](https://github.com/wizlijun/claude_translater). The original project uses shell scripts as its entry point, coordinating the Claude CLI with multiple step scripts to perform chunked translation. This project restructures the workflow as an agent skill for Codex, Claude Code, and OpenClaw, using subagents to translate chunks in parallel, with manifest-driven integrity checks, resumable runs, and multi-format output unified into a single pipeline. As the project structure and implementation differ significantly from the original, this is an independent project rather than a fork.
+> Inspired by [claude_translater](https://github.com/wizlijun/claude_translater). The original project uses shell scripts as its entry point, coordinating the Claude CLI with multiple step scripts to perform chunked translation. This project restructures the workflow as an Agent Skill for Claude Code, Codex, Cursor, OpenClaw, and other compatible agents, using subagents to translate chunks in parallel, with manifest-driven integrity checks, resumable runs, and multi-format output unified into a single pipeline. As the project structure and implementation differ significantly from the original, this is an independent project rather than a fork.
 
 ---
 
@@ -19,7 +19,7 @@ Input (PDF/DOCX/EPUB)
   │
   ▼
 Calibre ebook-convert → HTMLZ → HTML → Markdown
-  (or Markdown input, e.g. from MinerU / Marker, skipping Calibre)
+  (or Markdown from a layout-aware PDF parser, skipping Calibre)
   │
   ▼
 Split into chunks (chunk0001.md, chunk0002.md, ...)
@@ -45,28 +45,37 @@ Each chunk gets its own independent subagent with a fresh context window. This p
 - **Manifest validation** — SHA-256 hash tracking prevents stale or corrupt outputs from being merged
 - **Multi-format output** — HTML (with floating TOC), DOCX, EPUB, PDF
 - **Optional output controls** — explicit EPUB cover, custom temp root, and user-facing export aliases
-- **Multi-language** — zh, en, ja, ko, fr, de, es (extensible)
-- **PDF/DOCX/EPUB/Markdown input** — Calibre handles the conversion heavy lifting; formula- and table-heavy PDFs can be pre-extracted to Markdown with MinerU or Marker
+- **Multi-language** — any language code, e.g. zh, en, ja, ko, fr, de, es, it (Italian), or one with a region such as zh-TW or pt-BR
+- **PDF/DOCX/EPUB/Markdown input** — Calibre handles the conversion heavy lifting; formula- and table-heavy PDFs can be pre-extracted to Markdown with a layout-aware parser (see [Step 1](#step-1-convert))
 
 ## Prerequisites
 
-- **Agent runtime** — Codex, Claude Code, or OpenClaw, installed and ready to run skills
+- **Agent runtime** — any agent that supports Agent Skills and can launch sub-agents from a skill (see [Compatibility](#compatibility))
 - **Calibre** — `ebook-convert` command must be available ([download](https://calibre-ebook.com/))
 - **Pandoc** — for HTML↔Markdown conversion ([download](https://pandoc.org/))
 - **Python 3** with:
-  - `pypandoc` — required (`pip install pypandoc`)
+  - `pypandoc` — optional (`pip install pypandoc`); without it the `pandoc` binary is called directly
   - `beautifulsoup4` — optional, for better TOC generation (`pip install beautifulsoup4`)
-- **MinerU or Marker** — optional, only to pre-extract formula- and table-heavy PDFs to Markdown (see [Step 1](#step-1-convert))
+- **A layout-aware PDF parser** — optional, only to pre-extract formula- and table-heavy PDFs to Markdown; supported parsers are listed in [Step 1](#step-1-convert)
 
 ## Quick Start
 
 ### 1. Install the skill
 
-#### Codex
+#### Any Agent Skills–compatible agent
 
 ```bash
-npx skills add deusyu/translate-book -a codex -g
+npx skills add deusyu/translate-book
 ```
+
+The command asks which agents to install the skill for. To install it globally for one agent, pass `-a <agent> -g`, for example `npx skills add deusyu/translate-book -a cursor -g`:
+
+| `-a` | Installed to |
+|------|--------------|
+| `claude-code` | `~/.claude/skills/translate-book` |
+| `codex`, `cursor`, `gemini-cli`, `opencode`, `github-copilot` | `~/.agents/skills/translate-book` (shared) |
+| `antigravity` | `~/.gemini/config/skills/translate-book` |
+| `openclaw` | `~/.openclaw/skills/translate-book` |
 
 Or install it manually:
 
@@ -75,20 +84,25 @@ mkdir -p ~/.agents/skills
 git clone https://github.com/deusyu/translate-book.git ~/.agents/skills/translate-book
 ```
 
-Restart Codex if the newly installed skill does not appear.
+Codex, Cursor, Gemini CLI, OpenCode, and GitHub Copilot read `~/.agents/skills/`. For Claude Code, clone into `~/.claude/skills/translate-book` instead. Restart the agent if the newly installed skill does not appear.
 
-#### Claude Code
+#### Plugin marketplace (Claude Code, GitHub Copilot CLI)
 
-```bash
-npx skills add deusyu/translate-book -a claude-code -g
+In Claude Code:
+
+```text
+/plugin marketplace add deusyu/translate-book
+/plugin install translate-book@translate-book
 ```
 
-Or install it manually:
+In GitHub Copilot CLI:
 
 ```bash
-mkdir -p ~/.claude/skills
-git clone https://github.com/deusyu/translate-book.git ~/.claude/skills/translate-book
+copilot plugin marketplace add deusyu/translate-book
+copilot plugin install translate-book@translate-book
 ```
+
+Install the skill either as a plugin or into a skills directory, not both: an agent that finds both copies loads both. In Claude Code, the plugin's skill is invoked as `/translate-book:translate-book`.
 
 #### OpenClaw
 
@@ -108,7 +122,7 @@ $translate-book Translate /path/to/book.pdf into Chinese.
 
 Codex can also select the skill automatically when your request matches its description.
 
-#### Claude Code and OpenClaw
+#### Other agents
 
 Ask the agent:
 
@@ -116,11 +130,13 @@ Ask the agent:
 translate /path/to/book.pdf to Chinese
 ```
 
-In Claude Code, you can also use the slash command:
+In Claude Code and Cursor, you can also use the slash command:
 
 ```text
 /translate-book translate /path/to/book.pdf to Japanese
 ```
+
+In OpenCode, mention `@translate-book` in the request.
 
 The skill handles the full pipeline automatically — convert, chunk, translate in parallel, validate, merge, and build all output formats.
 
@@ -135,6 +151,43 @@ All files are in `{book_name}_temp/`:
 | `book.docx` | Word document |
 | `book.epub` | E-book |
 | `book.pdf` | Print-ready PDF |
+
+## Compatibility
+
+The skill needs an agent that can launch sub-agents from a skill, one per chunk. If the agent cannot, the skill says so and stops instead of translating the whole book in a single context.
+
+| Agent | Status | Invoke |
+|-------|--------|--------|
+| Cursor | Verified | `/translate-book`, or describe the task |
+| Claude Code | Original host; minimal test not yet re-run | `/translate-book` (plugin install: `/translate-book:translate-book`), or describe the task |
+| Codex | Verified | `$translate-book`, or describe the task |
+| OpenClaw | Original host; minimal test not yet re-run | Describe the task |
+| Antigravity | Installable, not yet verified | Describe the task |
+| Gemini CLI | Installable, not yet verified | Describe the task |
+| OpenCode | Installable, not yet verified | `@translate-book`, or describe the task |
+| GitHub Copilot | Installable, not yet verified | Describe the task |
+
+"Verified" means the agent passed this minimal test. Install the skill, then convert a baseline book that ships with it:
+
+```bash
+S=~/.agents/skills/translate-book   # the skill's install directory
+mkdir -p /tmp/tb-smoke && cd /tmp/tb-smoke
+python3 "$S/scripts/convert.py" "$S/tests/baselines/diligent-dick/diligent-dick.epub" --olang zh
+```
+
+Then ask the agent:
+
+```text
+Use the translate-book skill. Do not convert again; the temp directory is /tmp/tb-smoke/diligent-dick_temp. Only handle chunk0045 and chunk0046, concurrency=2, skip the glossary step, launch one sub-agent per chunk as in Step 4 of SKILL.md to translate them into Chinese, and stop when done.
+```
+
+The agent passes when all three hold:
+
+1. The transcript shows `python3 /absolute/path/scripts/chunk_context.py …`, so `{baseDir}` was resolved to a real path.
+2. The write times of `diligent-dick_temp/output_chunk0045*` and `output_chunk0046*` overlap with the other sub-agent's run, so the chunks were translated in parallel rather than one after another by the main agent.
+3. `python3 "$S/scripts/merge_meta.py" status diligent-dick_temp` reports `malformed_meta_files: 0`.
+
+Ran it on an agent that is not marked Verified? Please open an issue with the agent, its version, and the three results.
 
 ## Repository Test Assets
 
@@ -200,13 +253,25 @@ By default the working directory is `{book_name}_temp/` under the current direct
 Calibre reflows PDF text by coordinate heuristics. That works for plain prose, but academic and technical PDFs lose their structure: formulas break into fragments, tables flatten into one cell per line, and multi-column pages interleave. For those PDFs, extract them with a layout-aware parser first and give `convert.py` the Markdown it writes. `.md` / `.markdown` input skips Calibre entirely:
 
 ```bash
-pip install -U "mineru>=4.0,<5"                # or: pip install marker-pdf
-mineru-kit parse paper.pdf -o paper.md         # MinerU >= 4 (CPU-only basic tier: ~0.8 GB of models)
-# marker_single paper.pdf --output_dir out/    # Marker: writes out/paper/paper.md
+mineru-kit parse paper.pdf -o paper.md          # or any parser from the table below
 python3 scripts/convert.py paper.md --olang zh
 ```
 
-The parsers keep formulas as `$...$` / `$$...$$` LaTeX and tables as tables. `convert.py` copies images referenced next to the Markdown file, and decodes the base64 images MinerU inlines, into `{book_name}_temp/images/`, so chunks never carry image payloads. Display-math blocks (`$$ ... $$`) are never split across chunks. YAML front matter (`title`, `author`, `lang`) fills `config.txt` and is not sent for translation; without it, a leading `#` heading becomes `original_title`. The temp dir is named after the Markdown file, so `paper.md` maps to `paper_temp/`. If that dir was built from `paper.pdf`, `convert.py` aborts on the source-fingerprint mismatch, so delete it first. Both parsers download ML models on first run. `--strip-page-numbers` and `--detect-page-numbers` only apply to Calibre input.
+Any parser works if its Markdown follows these conventions:
+
+- **Formulas** as `$...$` / `$$...$$` LaTeX. Display-math blocks are never split across chunks.
+- **Tables** as Markdown pipe tables or HTML `<table>`.
+- **Images** as files in the Markdown file's directory or its subdirectories, or inlined as base64 data URIs. `convert.py` copies or decodes them into `{book_name}_temp/images/`, so chunks never carry image payloads. An image whose path leads outside that directory (through `..`, an absolute path, or a symlink) is not copied: `convert.py` warns and leaves the reference as it is.
+
+| Parser | Install | Extract | Markdown file | Notes |
+|---|---|---|---|---|
+| [MinerU](https://github.com/opendatalab/MinerU) >= 4 | `pip install -U "mineru>=4.0,<5"` | `mineru-kit parse paper.pdf -o paper.md` | `paper.md` | CPU-only basic tier: ~0.8 GB of models |
+| [Marker](https://github.com/datalab-to/marker) | `pip install marker-pdf` | `marker_single paper.pdf --output_dir out/` | `out/paper/paper.md` | |
+| [docling](https://github.com/docling-project/docling) | `pip install docling` | `docling paper.pdf --enrich-formula --output out/` | `out/paper.md` | Without `--enrich-formula`, every formula becomes `<!-- formula-not-decoded -->`. Only display formulas are recognized; inline math stays plain text |
+
+All of them download ML models on first run, their CLIs change between versions (check `--help` if a flag is rejected), and their licenses differ. If the Markdown still contains a parser's placeholder for a dropped formula or image (`<!-- formula-not-decoded -->`, `<!-- image -->`), `convert.py` warns: re-extract with the flag the warning names before translating. For documents with inline math, use MinerU or Marker: docling keeps display formulas only, and `convert.py` warns when it finds several display formulas but no inline math.
+
+YAML front matter (`title`, `author`, `lang`) fills `config.txt` and is not sent for translation; without it, a leading `#` heading becomes `original_title`. The temp dir is named after the Markdown file, so `paper.md` maps to `paper_temp/`. If that dir was built from `paper.pdf`, `convert.py` aborts on the source-fingerprint mismatch, so delete it first. `--strip-page-numbers` and `--detect-page-numbers` only apply to Calibre input.
 
 At build time Pandoc renders `$...$` / `$$...$$` as MathML, so formulas are typeset in `book.html` and `book.pdf`, and in `book.epub` on readers that support MathML. Calibre's DOCX output cannot typeset MathML: formulas appear there as flattened text followed by their TeX source.
 
@@ -253,16 +318,16 @@ Before launching subagents, `scripts/run_state.py plan <temp_dir>` decides which
 ### Step 3: Merge & Build
 
 ```bash
-python3 scripts/merge_and_build.py --temp-dir book_temp --title "《translated title》"
+python3 scripts/merge_and_build.py --temp-dir book_temp --title "translated title"
 ```
 
 Optional output flags:
 
 ```bash
-python3 scripts/merge_and_build.py --temp-dir book_temp --title "《translated title》" --cover cover.jpg --export-name "translated-title"
+python3 scripts/merge_and_build.py --temp-dir book_temp --title "translated title" --cover cover.jpg --export-name "translated-title"
 ```
 
-`--cover` passes an explicit image to the EPUB Calibre step. `--export-name` creates alias copies such as `translated-title.epub` while preserving the canonical `book.*` pipeline artifacts. The name `book_doc` (case-insensitive) is reserved and rejected before building because its HTML alias would overwrite `book_doc.html`.
+`--title` becomes the metadata title that readers show in page headers, so pass it without 书名号 or quotes (a wrapping `《》` is stripped). `--cover` passes an explicit image to the EPUB Calibre step. `--export-name` creates alias copies such as `translated-title.epub` while preserving the canonical `book.*` pipeline artifacts. The name `book_doc` (case-insensitive) is reserved and rejected before building because its HTML alias would overwrite `book_doc.html`.
 
 Before merging, the script validates:
 - Every source chunk has a corresponding output file (1:1 match)
@@ -281,6 +346,7 @@ Intermediate files stay in the temp dir after the build, so a few bad passages c
 | File | Purpose |
 |------|---------|
 | `SKILL.md` | Agent skill definition — orchestrates the full pipeline |
+| `.claude-plugin/marketplace.json` | Plugin marketplace manifest for Claude Code and GitHub Copilot CLI (single plugin, source `./`) |
 | `scripts/convert.py` | PDF/DOCX/EPUB → Markdown chunks via Calibre HTMLZ; Markdown input skips Calibre |
 | `scripts/manifest.py` | Chunk manifest: SHA-256 tracking and merge validation |
 | `scripts/glossary.py` | Glossary management: per-chunk term tables for consistent terminology |
@@ -302,7 +368,10 @@ Intermediate files stay in the temp dir after the build, so a few bad passages c
 | `Calibre ebook-convert not found` | Install Calibre and ensure `ebook-convert` is in PATH |
 | `Manifest validation failed` | Source chunks changed since splitting — re-run `convert.py` |
 | `was created from different source bytes` | The temp dir belongs to a different source file — delete the temp dir or use a fresh `--temp-root` |
-| PDF formulas/tables garbled after conversion | Extract the PDF with MinerU or Marker, delete the old temp dir, and run `convert.py` on the `.md` (see [Step 1](#step-1-convert)) |
+| PDF formulas/tables garbled after conversion | Extract the PDF with a parser from the table in [Step 1](#step-1-convert), delete the old temp dir, and run `convert.py` on the `.md` |
+| `formula(s) were not decoded` / `image(s) were exported as placeholders` | The parser dropped that content — re-extract with the flag the warning names, delete the temp dir, and run `convert.py` again |
+| `display formula(s) but no inline math` | The parser turned inline math into plain text (docling's standard pipeline does) — re-extract with MinerU or Marker, delete the temp dir, and run `convert.py` again. If the document has no inline math, ignore it |
+| `pandoc left N formula(s) as raw TeX` | pandoc could not parse that LaTeX, so the formula shows as `$$...$$` text — fix it in the `output_chunk*.md` holding the snippet the warning prints, then run `merge_and_build.py` again |
 | `Blank output` / `Empty output` | A subagent wrote a whitespace-only or empty chunk — re-run the skill to re-translate it |
 | `Missing source chunk` | Source file deleted — re-run `convert.py` to regenerate |
 | Incomplete translation | Re-run the skill — it resumes from where it stopped |
@@ -315,7 +384,7 @@ Intermediate files stay in the temp dir after the build, so a few bad passages c
 
 ## Roadmap
 
-Tracking [issue #7](https://github.com/deusyu/translate-book/issues/7) — name/term inconsistency and pronoun/gender errors across chunks. The pipeline now covers high-frequency entities, alias/spelling drift, adjacent-chunk pronoun context, and selective re-translation after glossary changes. Full-book organic validation remains a future quality pass. The plan is four independently shippable phases.
+[Issue #7](https://github.com/deusyu/translate-book/issues/7) — name/term inconsistency and pronoun/gender errors across chunks — was closed in June 2026, and Phases 1–3 have shipped. The pipeline now covers high-frequency entities, alias/spelling drift, adjacent-chunk pronoun context, and selective re-translation after glossary changes. Full-book organic validation remains a future quality pass. The plan is four independently shippable phases.
 
 ### Design principles
 
@@ -351,6 +420,10 @@ Recent PR discussions also surfaced several useful workflow improvements, but th
 - **Safer Calibre/Pandoc artifact cleanup (partly shipped).** Page-number and Calibre-marker cleanup is regression-tested, preserving years, chapter numbers, and non-monotonic standalone numbers. Continue improving cleanup incrementally under tests. (context: closed #5)
 - **Optional user-facing export names (shipped).** `merge_and_build.py --export-name <stem>` creates alias copies while preserving canonical pipeline artifacts as `book.html`, `book_doc.html`, `book.docx`, `book.epub`, and `book.pdf`. (context: closed #6)
 
+### Next — Text inside figures (issue #66)
+
+[PR #68](https://github.com/deusyu/translate-book/pull/68), the first part of [issue #66](https://github.com/deusyu/translate-book/issues/66), added `scripts/figure_text.py`: it lists the images awaiting recognition, validates the recognition sidecars, and injects their text into the chunks so it is translated with the body. SKILL.md does not call it yet.
+
 ## Star History
 
 If you find this project helpful, please consider giving it a Star ⭐!
@@ -369,7 +442,7 @@ Companies are welcome to sponsor translate-book, and terms are open to discussio
 
 Not accepted:
 
-- Setup guides, base URLs, or environment variables for third-party model platforms or API relays in the README or docs. translate-book does not call any model API itself; translation runs inside the user's own agent host (Codex, Claude Code, OpenClaw).
+- Setup guides, base URLs, or environment variables for third-party model platforms or API relays in the README or docs. translate-book does not call any model API itself; translation runs inside the user's own agent host (Claude Code, Codex, Cursor, OpenClaw, and others).
 
 ## License
 

@@ -13,6 +13,7 @@ import tempfile
 import shutil
 from pathlib import Path
 import re
+import html as html_lib
 
 def find_calibre_convert():
     """Find ebook-convert command from Calibre installation"""
@@ -43,19 +44,23 @@ def extract_html_metadata(html_file):
         # Extract title
         title_match = re.search(r'<title[^>]*>(.*?)</title>', content, re.IGNORECASE | re.DOTALL)
         if title_match:
-            title = re.sub(r'<[^>]+>', '', title_match.group(1)).strip()
+            title = html_lib.unescape(re.sub(r'<[^>]+>', '', title_match.group(1))).strip()
         else:
             # Try h1 tag
             h1_match = re.search(r'<h1[^>]*>(.*?)</h1>', content, re.IGNORECASE | re.DOTALL)
             if h1_match:
-                title = re.sub(r'<[^>]+>', '', h1_match.group(1)).strip()
+                title = html_lib.unescape(re.sub(r'<[^>]+>', '', h1_match.group(1))).strip()
             else:
                 title = os.path.splitext(os.path.basename(html_file))[0]
         
-        # Extract author
-        author_match = re.search(r'<meta[^>]*name=["\']author["\'][^>]*content=["\']([^"\']*)["\']', content, re.IGNORECASE)
+        # Extract author. The value ends at the quote that opened it; the
+        # other kind of quote may appear inside, as in content="Flann O'Brien".
+        author_match = re.search(
+            r'<meta[^>]*name=["\']author["\'][^>]*content=(["\'])(.*?)\1',
+            content, re.IGNORECASE | re.DOTALL,
+        )
         if author_match:
-            author = author_match.group(1).strip()
+            author = html_lib.unescape(author_match.group(2)).strip()
         else:
             author = "Unknown Author"
         
@@ -65,14 +70,22 @@ def extract_html_metadata(html_file):
         print(f"Warning: Could not extract metadata: {e}")
         return os.path.splitext(os.path.basename(html_file))[0], "Unknown Author"
 
+def _primary_language(lang):
+    """The primary subtag of a language tag: zh for zh-TW, pt for pt_BR.
+
+    Compare it whole: kok is Konkani and jav is Javanese, not Korean or Japanese.
+    """
+    return lang.lower().replace('_', '-').split('-')[0]
+
+
 def _get_font_family_for_lang(lang):
     """Get appropriate font family CSS for the given language."""
-    lang_lower = lang.lower()
-    if lang_lower.startswith('zh'):
+    primary = _primary_language(lang)
+    if primary == 'zh':
         return '"FangSong", "FangSong_GB2312", "仿宋", "仿宋_GB2312", "STFangSong", "SimSun", serif'
-    elif lang_lower.startswith('ja'):
+    elif primary == 'ja':
         return '"Hiragino Mincho ProN", "Yu Mincho", "MS Mincho", serif'
-    elif lang_lower.startswith('ko'):
+    elif primary == 'ko':
         return '"Nanum Myeongjo", "Batang", serif'
     else:
         return 'Georgia, "Times New Roman", Times, serif'
@@ -80,12 +93,12 @@ def _get_font_family_for_lang(lang):
 
 def _get_pdf_font_for_lang(lang):
     """Get PDF font name for the given language."""
-    lang_lower = lang.lower()
-    if lang_lower.startswith('zh'):
+    primary = _primary_language(lang)
+    if primary == 'zh':
         return 'FangSong'
-    elif lang_lower.startswith('ja'):
+    elif primary == 'ja':
         return 'Hiragino Mincho ProN'
-    elif lang_lower.startswith('ko'):
+    elif primary == 'ko':
         return 'Nanum Myeongjo'
     else:
         return 'Georgia'
@@ -206,6 +219,26 @@ def get_output_format(output_file):
     }
     return format_map.get(ext)
 
+def _toc_xpaths(html_file):
+    """Return the --level1-toc and --level2-toc XPaths for this book.
+
+    Pandoc's title block puts the book title in an <h1 class="title">. When the
+    chapters are h2, `//h:h1` alone makes that title the only top-level entry,
+    with every chapter nested under it. Leaving the title out drops the chapters
+    too, since Calibre discards level-2 entries with no level-1 entry to sit
+    under. So the title shares level 1 with the top content heading level.
+    """
+    try:
+        with open(html_file, encoding='utf-8', errors='replace') as f:
+            html = f.read()
+    except OSError:
+        return "//h:h1", "//h:h2"
+    levels = {int(n) for n in re.findall(r'<h([1-6])\b(?![^>]*class="title")', html, re.IGNORECASE)}
+    top = min(levels, default=1)
+    if top == 1:
+        return "//h:h1", "//h:h2"
+    return f"//h:h1 | //h:h{top}", f"//h:h{top + 1}"
+
 def convert_html_with_calibre(html_file, output_file, format_type, timeout=600, lang="zh-CN", cover=None):
     """Convert HTML to specified format using Calibre with timeout protection"""
     
@@ -219,7 +252,9 @@ def convert_html_with_calibre(html_file, output_file, format_type, timeout=600, 
     print(f"Converting HTML to {format_type.upper()} using Calibre...")
     print(f"Title: {title}")
     print(f"Author: {author}")
-    
+
+    level1_toc, level2_toc = _toc_xpaths(html_file)
+
     # Prepare Calibre command
     cmd = [
         calibre_path,
@@ -230,7 +265,12 @@ def convert_html_with_calibre(html_file, output_file, format_type, timeout=600, 
         "--language", lang,
         "--book-producer", "translate-book",
         "--preserve-cover-aspect-ratio",
-        "--smarten-punctuation"
+        "--smarten-punctuation",
+        # Build the TOC from heading levels. Calibre's default chapter
+        # detection only matches English words (chapter, part, ...), so a
+        # translated book otherwise gets no TOC entries for its chapters.
+        "--level1-toc", level1_toc,
+        "--level2-toc", level2_toc,
     ]
     
     # Add format-specific options

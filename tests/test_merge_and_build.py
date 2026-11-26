@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 import unittest
+from html.parser import HTMLParser
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -20,13 +21,54 @@ import merge_and_build  # noqa: E402
 class ConvertWithPandocTests(unittest.TestCase):
     def test_renders_tex_math_as_mathml(self):
         with mock.patch.object(merge_and_build.subprocess, "run") as run_mock:
-            with contextlib.redirect_stdout(io.StringIO()):
+            run_mock.return_value.stderr = ""
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
                 ok = merge_and_build.convert_with_pandoc("in.md", "out.html", "Title", "zh-CN")
 
         self.assertTrue(ok)
         cmd = run_mock.call_args.args[0]
         self.assertIn("--mathml", cmd)
         self.assertEqual(cmd[cmd.index("--to") + 1], "html5")
+        self.assertNotIn("Warning", buf.getvalue())
+
+    def test_warns_about_formulas_left_as_raw_tex(self):
+        stderr = (
+            "[WARNING] Could not convert TeX math a & b, rendering as TeX:\n  a & b\n    ^\n  unexpected '&'\n"
+            "[WARNING] Could not convert TeX math x \\quad \\\\, rendering as TeX:\n  unexpected control sequence \\\\\n"
+        )
+        with mock.patch.object(merge_and_build.subprocess, "run") as run_mock:
+            run_mock.return_value.stderr = stderr
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                ok = merge_and_build.convert_with_pandoc("in.md", "out.html", "Title", "zh-CN")
+
+        self.assertTrue(ok)
+        out = buf.getvalue()
+        self.assertIn("Warning: pandoc left 2 formula(s) as raw TeX instead of MathML:", out)
+        self.assertIn("  a & b\n", out)
+        self.assertIn("  x \\quad \\\\\n", out)
+
+    @unittest.skipUnless(merge_and_build.check_pandoc_available(), "pandoc is not installed")
+    def test_real_pandoc_warning_is_recognized(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            md = Path(tmp) / "in.md"
+            md.write_text("$$a & b$$\n\n$$\\frac{1}{2}$$\n", encoding="utf-8")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                ok = merge_and_build.convert_with_pandoc(str(md), str(Path(tmp) / "out.html"), "T", "en")
+        self.assertTrue(ok)
+        self.assertIn("pandoc left 1 formula(s) as raw TeX", buf.getvalue())
+
+    def test_uses_ascii_heading_ids(self):
+        # Non-ASCII ids lose their anchors in Calibre's split EPUB TOC.
+        with mock.patch.object(merge_and_build.subprocess, "run") as run_mock:
+            run_mock.return_value.stderr = ""
+            with contextlib.redirect_stdout(io.StringIO()):
+                merge_and_build.convert_with_pandoc("in.md", "out.html", "Title", "zh-CN")
+
+        cmd = run_mock.call_args.args[0]
+        self.assertIn("+ascii_identifiers", cmd[cmd.index("--from") + 1])
 
 
 class GenerateFormatTests(unittest.TestCase):
@@ -363,6 +405,76 @@ class FootnoteValidationTests(unittest.TestCase):
         self.assertNotIn("[^1]", rendered)
 
 
+class FigureTextValidationTests(unittest.TestCase):
+    SOURCE = (
+        "![Flow](images/flow.png)\n\n"
+        '::: {.figure-text image="images/flow.png"}\n- Client\n- Load balancer\n:::\n\n'
+        "After.\n"
+    )
+    TRANSLATED = (
+        "![流程](images/flow.png)\n\n"
+        '::: {.figure-text image="images/flow.png"}\n- 客户端\n- 负载均衡器\n:::\n\n'
+        "之后。\n"
+    )
+
+    def _write(self, path, content):
+        Path(path).write_text(content, encoding="utf-8")
+
+    def _validate(self, source, output):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self._write(Path(temp_dir) / "chunk0001.md", source)
+            self._write(Path(temp_dir) / "output_chunk0001.md", output)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                ok = merge_and_build._validate_chunk_figure_text(temp_dir)
+        return ok, buf.getvalue()
+
+    def test_passes_when_only_the_items_are_translated(self):
+        ok, out = self._validate(self.SOURCE, self.TRANSLATED)
+        self.assertTrue(ok, msg=out)
+
+    def test_passes_without_figure_text(self):
+        ok, out = self._validate("Text.\n", "正文。\n")
+        self.assertTrue(ok, msg=out)
+
+    def test_fails_when_the_closing_fence_is_lost(self):
+        ok, out = self._validate(self.SOURCE, self.TRANSLATED.replace("\n:::\n", "\n：：：\n"))
+        self.assertFalse(ok)
+        self.assertIn("blocks without a closing ::: line: 1", out)
+
+    def test_fails_when_the_opening_line_is_altered(self):
+        altered = self.TRANSLATED.replace('image="images/flow.png"}', 'image="图片/flow.png"}')
+        ok, out = self._validate(self.SOURCE, altered)
+        self.assertFalse(ok)
+        self.assertIn("""missing opening lines (count): [('::: {.figure-text image="images/flow.png"}', 1)]""", out)
+        self.assertIn("""extra   opening lines (count): [('::: {.figure-text image="图片/flow.png"}', 1)]""", out)
+
+    def test_fails_when_the_output_predates_the_injected_text(self):
+        ok, out = self._validate(self.SOURCE, "![流程](images/flow.png)\n\n之后。\n")
+        self.assertFalse(ok)
+        self.assertIn("translate it again", out)
+
+    def test_merge_fails_and_removes_stale_output_on_divergence(self):
+        from manifest import create_manifest
+
+        with tempfile.TemporaryDirectory() as tmp:
+            temp_dir = Path(tmp)
+            self._write(temp_dir / "input.md", self.SOURCE)
+            self._write(temp_dir / "chunk0001.md", self.SOURCE)
+            self._write(temp_dir / "output_chunk0001.md", self.TRANSLATED.replace("\n:::\n", "\n"))
+            with contextlib.redirect_stdout(io.StringIO()):
+                create_manifest(str(temp_dir), ["chunk0001.md"], str(temp_dir / "input.md"))
+            self._write(temp_dir / "output.md", "stale merged content")
+
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                ok = merge_and_build.merge_markdown_files(str(temp_dir))
+
+            self.assertFalse(ok)
+            self.assertFalse((temp_dir / "output.md").exists())
+            self.assertIn("Figure text validation failed", buf.getvalue())
+
+
 class ImageValidationTests(unittest.TestCase):
     """Validates _validate_chunk_images, _check_generated_html_sanity, and the
     basic-regex alt-escape fix. Together these guard against subagent-produced
@@ -671,6 +783,257 @@ class ImageValidationTests(unittest.TestCase):
 
             sanity_ok, sanity_out = self._run_html_sanity(str(html_file))
             self.assertTrue(sanity_ok, msg=sanity_out)
+
+
+class MetadataTitleTests(unittest.TestCase):
+    def test_strips_wrapping_book_title_marks(self):
+        self.assertEqual(merge_and_build._metadata_title("《财阀、先知、主帅与君王》"), "财阀、先知、主帅与君王")
+        self.assertEqual(merge_and_build._metadata_title("  Plain Title "), "Plain Title")
+
+    def test_keeps_marks_that_do_not_wrap_the_whole_title(self):
+        title = "《A》与《B》"
+        self.assertEqual(merge_and_build._metadata_title(title), title)
+
+
+class _HeadReader(HTMLParser):
+    """Reads <html lang>, <title> and <meta name="author"> the way an HTML parser does."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.lang = None
+        self.title = ""
+        self.authors = []
+        self._in_title = False
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "html":
+            self.lang = attrs.get("lang")
+        elif tag == "title":
+            self._in_title = True
+        elif tag == "meta" and attrs.get("name") == "author":
+            self.authors.append(attrs.get("content"))
+
+    def handle_endtag(self, tag):
+        if tag == "title":
+            self._in_title = False
+
+    def handle_data(self, data):
+        if self._in_title:
+            self.title += data
+
+
+class TemplateMetadataTests(unittest.TestCase):
+    # Characters that are special in HTML, and a backslash, which re.sub
+    # reads as a group reference in a replacement string.
+    TITLE = "O'Brien's \"Third\" Policeman & List<T>"
+    AUTHOR = "Flann O'Brien & \"Myles\" <na gCopaleen> \\1"
+
+    def test_title_and_author_parse_back_unchanged(self):
+        for template in ("template_ebook.html", "template.html"):
+            with self.subTest(template=template), tempfile.TemporaryDirectory() as temp_dir:
+                out = Path(temp_dir) / "book.html"
+                ok = merge_and_build.apply_template_to_html(
+                    "<p>x</p>", str(SCRIPT_DIR / template), str(out),
+                    self.TITLE, merge_and_build.get_lang_config("en"), self.AUTHOR,
+                )
+
+                self.assertTrue(ok)
+                reader = _HeadReader()
+                reader.feed(out.read_text(encoding="utf-8"))
+                self.assertEqual(reader.authors, [self.AUTHOR])
+                self.assertEqual(reader.title, self.TITLE)
+
+
+class TemplatePlaceholderTests(unittest.TestCase):
+    # A book about templates can show the placeholders in its text and title.
+    BODY = "<pre><code>$title$ $lang$ $body_font$ $toc_label$ $body$ {{content}}</code></pre>"
+    TITLE = "Writing $title$, $lang$ and $body$"
+
+    def test_placeholders_in_the_book_text_are_kept(self):
+        for template in ("template_ebook.html", "template.html"):
+            with self.subTest(template=template), tempfile.TemporaryDirectory() as temp_dir:
+                out = Path(temp_dir) / "book.html"
+                ok = merge_and_build.apply_template_to_html(
+                    self.BODY, str(SCRIPT_DIR / template), str(out),
+                    self.TITLE, merge_and_build.get_lang_config("de"),
+                )
+
+                self.assertTrue(ok)
+                html = out.read_text(encoding="utf-8")
+                self.assertEqual(html.count(self.BODY), 1)
+                reader = _HeadReader()
+                reader.feed(html)
+                self.assertEqual(reader.title, self.TITLE)
+                self.assertEqual(reader.lang, "de")
+                rest = html.replace(self.BODY, "").replace(self.TITLE, "")
+                self.assertNotRegex(rest, r"\$(title|lang|body_font|toc_label|body)\$")
+
+
+class LangConfigTests(unittest.TestCase):
+    def test_table_codes_keep_their_entries(self):
+        for code, entry in merge_and_build.LANG_CONFIG.items():
+            with self.subTest(code=code):
+                self.assertIs(merge_and_build.get_lang_config(code), entry)
+        self.assertEqual(merge_and_build.get_lang_config("zh")["lang_attr"], "zh-CN")
+
+    def test_any_language_tag_is_used_as_given(self):
+        table = merge_and_build.LANG_CONFIG
+        default = merge_and_build._DEFAULT_LANG_CONFIG
+        # Fonts and the TOC label come from the entry for the primary subtag.
+        cases = {
+            "it": ("it", default),
+            "ru": ("ru", default),
+            "pt-BR": ("pt-BR", default),
+            "pt_BR": ("pt-BR", default),
+            "zh-SG": ("zh-SG", table["zh"]),
+            "en-GB": ("en-GB", table["en"]),
+        }
+        for code, (lang_attr, entry) in cases.items():
+            with self.subTest(code=code):
+                self.assertEqual(merge_and_build.get_lang_config(code), dict(entry, lang_attr=lang_attr))
+
+    def test_traditional_chinese_gets_its_toc_label(self):
+        zh = merge_and_build.LANG_CONFIG["zh"]
+        # A script subtag decides; without one, TW, HK and MO are Traditional.
+        cases = {
+            "zh-TW": "目錄", "zh_TW": "目錄", "zh-hk": "目錄", "zh-MO": "目錄",
+            "zh-Hant": "目錄", "zh-Hant-CN": "目錄", "zh-Hant-HK": "目錄",
+            "zh-CN": "目录", "zh-SG": "目录", "zh-Hans": "目录", "zh-Hans-TW": "目录", "zh-Hans-HK": "目录",
+        }
+        for code, label in cases.items():
+            with self.subTest(code=code):
+                self.assertEqual(
+                    merge_and_build.get_lang_config(code),
+                    dict(zh, lang_attr=code.replace("_", "-"), toc_label=label),
+                )
+        self.assertIs(merge_and_build.get_lang_config("zh"), zh)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out = Path(temp_dir) / "book.html"
+            self.assertTrue(merge_and_build.apply_template_to_html(
+                "<p>x</p>", str(SCRIPT_DIR / "template.html"), str(out),
+                "Title", merge_and_build.get_lang_config("zh-TW"),
+            ))
+            self.assertIn("<h3>目錄</h3>", out.read_text(encoding="utf-8"))
+
+    def test_a_value_that_is_not_a_language_code_falls_back_to_en(self):
+        for value in ("Italian", "Traditional Chinese", "", 'it" onload="x'):
+            with self.subTest(value=value):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    cfg = merge_and_build.get_lang_config(value)
+                self.assertIs(cfg, merge_and_build._DEFAULT_LANG_CONFIG)
+                self.assertIn(f"'{value}' is not a language code", out.getvalue())
+
+    def test_html_lang_is_the_language_tag(self):
+        for code, lang in (("zh", "zh-CN"), ("it", "it"), ("zh-TW", "zh-TW"), ("pt_BR", "pt-BR")):
+            for template in ("template_ebook.html", "template.html"):
+                with self.subTest(code=code, template=template), tempfile.TemporaryDirectory() as temp_dir:
+                    out = Path(temp_dir) / "book.html"
+                    ok = merge_and_build.apply_template_to_html(
+                        "<p>x</p>", str(SCRIPT_DIR / template), str(out),
+                        "Title", merge_and_build.get_lang_config(code),
+                    )
+
+                    self.assertTrue(ok)
+                    reader = _HeadReader()
+                    reader.feed(out.read_text(encoding="utf-8"))
+                    self.assertEqual(reader.lang, lang)
+
+    def test_main_passes_the_tag_to_the_html_and_calibre(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            Path(temp_dir, "config.txt").write_text("output_lang=pt-BR\n", encoding="utf-8")
+            with mock.patch.object(
+                merge_and_build, "merge_markdown_files", return_value=True
+            ), mock.patch.object(
+                merge_and_build, "convert_md_to_html", return_value=True
+            ) as html_mock, mock.patch.object(
+                merge_and_build, "add_toc", return_value=True
+            ), mock.patch.object(
+                merge_and_build, "generate_formats", return_value=True
+            ) as formats_mock, mock.patch.object(
+                sys, "argv", ["merge_and_build.py", "--temp-dir", temp_dir]
+            ), contextlib.redirect_stdout(io.StringIO()):
+                merge_and_build.main()
+
+        self.assertEqual(html_mock.call_args.args[2]["lang_attr"], "pt-BR")
+        self.assertEqual(formats_mock.call_args.args[1], "pt-BR")
+
+
+class PdfRetryTests(unittest.TestCase):
+    def test_generate_formats_retries_pdf_once(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            Path(temp_dir, "book_doc.html").write_text("<html></html>", encoding="utf-8")
+            attempts = {".pdf": 0}
+
+            def fake_generate_format(html_file, temp_dir_, ext, lang_attr, cover=None):
+                path = os.path.join(temp_dir_, "book" + ext)
+                if ext == ".pdf":
+                    attempts[".pdf"] += 1
+                    if attempts[".pdf"] == 1:
+                        return None
+                Path(path).write_bytes(b"x")
+                return path
+
+            with mock.patch.object(merge_and_build, "generate_format", side_effect=fake_generate_format), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                ok = merge_and_build.generate_formats(temp_dir, "zh-CN")
+
+            self.assertTrue(ok)
+            self.assertEqual(attempts[".pdf"], 2)
+
+
+class HeadingOutlineTests(unittest.TestCase):
+    def _write_chunks(self, temp_dir, chunks):
+        for name, text in chunks.items():
+            Path(temp_dir, name).write_text(text, encoding="utf-8")
+
+    def test_lists_headings_in_book_order_without_code(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self._write_chunks(temp_dir, {
+                "chunk0001.md": "# Source chunks are not listed\n",
+                "output_chunk0001.md": (
+                    "# 第一章 标题\n"
+                    "\n"
+                    "```bash\n"
+                    "# install deps\n"
+                    "```\n"
+                    "\n"
+                    "~~~python\n"
+                    "# comment\n"
+                    "~~~\n"
+                    "\n"
+                    "#hashtag 不是标题\n"
+                    "\n"
+                    "   ## 缩进的不是标题\n"
+                    "\n"
+                    "## 第一节\n"
+                ),
+                # An unclosed fence hides the rest of its own chunk only.
+                "output_chunk2.md": "```\n# still code\n",
+                "output_chunk10.md": "## 第三章\n",
+                "output_chunk3.md": "## 第二章\n",
+            })
+
+            self.assertEqual(merge_and_build.heading_outline(temp_dir), [
+                "output_chunk0001.md:1: # 第一章 标题",
+                "output_chunk0001.md:15: ## 第一节",
+                "output_chunk3.md:1: ## 第二章",
+                "output_chunk10.md:1: ## 第三章",
+            ])
+
+    def test_main_prints_outline_without_building(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            self._write_chunks(temp_dir, {"output_chunk0001.md": "# 标题\n\n```\n# code\n```\n"})
+            out = io.StringIO()
+            with mock.patch.object(
+                sys, "argv", ["merge_and_build.py", "--temp-dir", temp_dir, "--headings"]
+            ), contextlib.redirect_stdout(out):
+                merge_and_build.main()
+
+            self.assertEqual(out.getvalue(), "output_chunk0001.md:1: # 标题\n")
+            self.assertEqual(os.listdir(temp_dir), ["output_chunk0001.md"])
 
 
 if __name__ == "__main__":
